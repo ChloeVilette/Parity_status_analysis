@@ -1,0 +1,3917 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+### ANALYSIS THE IMPACT OF BIRTH ON PRIMIPAROUS AND MULTIPAROUS FEMALES ###
+
+## Load libraries
+
+```{r Libraries}
+library(broom.mixed)
+library(flextable)
+library(igraph)
+library(dplyr)
+library(plyr)
+library(lsa)
+library(data.table)
+library(netTS)
+library(lubridate)
+library(tidyr)
+library(HDInterval)
+library(ggplot2)
+library(brms)
+library(cmdstanr)
+library(stringr)
+library(e1071)
+library(Perc)
+library(DHARMa)
+library(rstan)
+library(EloRating)
+#devtools::install_github("tbonne/netTS")
+```
+
+
+## PART 1: COMPARISON OF GROOMING EGO-NETWORK STRUCTURE BETWEEN ADULT AND JUVENILE FEMALES.
+
+# Load dataframes
+
+  # grooming data adults and juveniles
+
+```{r}
+all_grooming<-read.csv("gr.data.mixed.csv") # both juveniles and adults cleaned
+ndvi.df<-read.csv("ndvi.df.csv")
+scan.data<-read.csv("scan.data.csv")
+mumid.data<-read.csv("mumid.data.csv")
+dominance.data<-read.csv("dominance.data.csv")
+primi.status<-read.csv("primi_mothers.csv")
+id.traits<-read.csv("juvneiles_traits.csv")
+birth.df<-read.csv( "birth.df.csv")
+```
+
+  # Set and format these dataframes 
+
+```{r}
+# Grooming data
+all_grooming$date<-ymd(all_grooming$date)
+all_grooming<-all_grooming[,-1]
+colnames(all_grooming)<-c("from", "to", "Date", "Scan", "TroopID")
+
+# Scan data
+scan.data2<-scan.data[,c(2:7)]%>% filter(troop !="between groups")  
+scan.data<-scan.data [,-1]
+
+# Birth information
+birth.df$birth<-ymd(birth.df$birth)
+
+# NDVI data
+ndvi.df<-ndvi.df[,-1]
+ndvi.df$date<-ymd(ndvi.df$date)
+ndvi.df$troop<-tolower(ndvi.df$troop)
+
+# Dominance data
+dominance.data$Date<-ymd(dominance.data$Date)
+dominance.data<-dominance.data[,-1]
+
+# ID traits
+id.traits<-id.traits[,-1]
+```
+
+# Parameters 
+
+```{r}
+windowsize<- days(60)
+windowshift<- days(30)
+```
+
+# Measure extraction
+
+/!\ Reminder, we are not looking at the directionality in grooming interactions.
+
+  # cosine similarity
+
+```{r}
+## Create a dataframe to store values
+cosine.gr.tot <-data.frame(ID="pouit", cosine=1,  date = as.Date("2015-01-01"), troop="RST")
+
+for (k in unique(all_grooming$TroopID)){
+  
+  troop.data<- all_grooming %>% filter(TroopID==k & Date> "2014-06-01")
+  
+  windowstart<- min(troop.data$Date)
+  windowend<-windowstart + windowsize
+  
+  edgelist.previous<-data.frame()
+  
+  while (windowstart + windowsize <= max(troop.data$Date)){
+    
+    gr.subset <- create.window(troop.data, windowstart, windowend)
+    edgelist<- create.an.edgeList(gr.subset[,c(1,2)])
+    
+    if(nrow(edgelist)>0 & nrow(edgelist.previous)>0){
+      
+      list1<- edgelist.previous %>% filter(weight>0)
+      list2<- edgelist %>% filter(weight>0)
+      
+      list.prev<- unique(c(as.character(list1$from),as.character(list1$to)))
+      list.current<- unique(c(as.character(list2$from),as.character(list2$to)))
+      presence.indi <-unique(list.prev[list.prev %in% list.current])
+      presence.indi2<-unique(list.current[list.current %in% list.prev])
+      presence.both<- unique(c(presence.indi,presence.indi2))
+      
+      if (length(presence.both)>0){
+        
+        for (each in presence.both){
+          
+          cos.node.tot<- data.frame(ID="pouit", cosine=1,  date = as.Date("2015-01-01"), troop="RST")
+          
+          current.ind <- edgelist%>% filter(from%in% each| to %in% each)
+          previous.ind <- edgelist.previous%>% filter(from%in% each| to %in% each)
+          
+          current.ind$dyads <- ifelse(as.character(current.ind$from) < as.character(current.ind$to), paste(current.ind$from, current.ind$to), paste(current.ind$to, current.ind$from))
+          current.edgelist<-current.ind%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight.bis=sum(weight))
+          
+          previous.ind$dyads <- ifelse(as.character(previous.ind$from) < as.character(previous.ind$to), paste(previous.ind$from, previous.ind$to), paste(previous.ind$to, previous.ind$from))
+          prev.edgelist<-previous.ind%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight.bis=sum(weight))
+          edgelists<-merge(current.edgelist,prev.edgelist, by=c("dyads"), all=TRUE)
+          edgelists[is.na(edgelists)] <- 0
+          cosine.node<-lsa::cosine((edgelists$weight.bis.x), (edgelists$weight.bis.y))
+          
+          cos.node.tot$ID<- each
+          cos.node.tot$cosine<-cosine.node
+          cos.node.tot$date<- windowstart
+          cos.node.tot$troop<-k
+          cosine.gr.tot<- rbind(cosine.gr.tot,cos.node.tot)
+          
+        }
+      }
+    }
+    
+    edgelist.previous<- edgelist
+    gr.subset.prev<-gr.subset
+    windowend = windowend + windowshift
+    windowstart= windowstart+windowshift
+  }
+}
+cosine.gr.tot<- cosine.gr.tot%>% filter(ID !="pouit")
+
+# Individuals' traits (sex, cohort)
+cosine.gr.tot2<- merge(cosine.gr.tot,id.traits[,c("ID","cohort","sex")], by=c("ID"), all.x=T)
+
+```
+
+  # skewness
+
+```{r}
+## Create a dataframe to store values
+skew.gr<-  data.frame(ID=as.character("pouit"), skewness=1, date = as.Date("2015-01-01"), troop="RST")
+
+for ( k in unique(all_grooming$TroopID)){
+  
+  troop.data<- all_grooming %>% filter(TroopID==k & Date> "2014-06-01")
+  
+  windowstart<- as.Date(min(troop.data$Date))
+  windowend<-windowstart + windowsize
+  
+  firstLast<- node_first_last(troop.data)
+  
+  while (windowstart + windowsize <= max(troop.data$Date)){
+    
+    df.subset <- create.window(troop.data, windowstart, windowend) # subset juveniles
+    
+    ## FOCUS ON JUVE ISE
+    edgelist<- create.an.edgeList(df.subset[,c(1,2)])
+    
+    presence.both<- unique(c(as.character(edgelist$from),as.character(edgelist$to)))
+    
+    for (each in presence.both){
+      
+      skew.node.gr<-data.frame(ID="pouit", skewness=1,date = as.Date ("2015-01-01"), troop="RST")
+      
+      # if directed = FALSE
+      current.ind <- edgelist%>% filter(from %in% each | to %in% each)
+      current.ind$dyads <- ifelse(as.character(current.ind$from) < as.character(current.ind$to), paste(current.ind$from, current.ind$to), paste(current.ind$to, current.ind$from))
+      non.dire.edgelist<-current.ind%>% group_by(dyads)%>% dplyr::summarise(weight.bis=sum(weight))
+      skewness.node <-skewness(non.dire.edgelist$weight.bis)
+      
+      # Store measure
+      skew.node.gr$ID<- each
+      skew.node.gr$skewness<-skewness.node
+      skew.node.gr$date<- windowstart
+      skew.node.gr$troop<- k
+      skew.gr<- rbind(skew.gr,skew.node.gr)
+      
+    }
+    
+    windowend = windowend + windowshift
+    windowstart= windowstart+windowshift
+    
+  }
+}
+
+skew.gr<- skew.gr%>% filter(ID !="pouit")
+
+# Individuals' traits (sex, cohort)
+skew.gr2<- merge(skew.gr,id.traits[,c("ID","cohort","sex")], by=c("ID"), all.x=T)
+
+```
+
+  # strength
+
+```{r}
+# set strength function
+strength <- function (net) {
+  strength <-igraph::strength(net, mode=c("all"))
+  return(strength)
+}
+# rst 
+gr.troop<- all_grooming%>% filter(TroopID=="rst"& Date> "2014-06-01")
+strength.rst.gr<-nodeTS(gr.troop, windowsize = days(60), windowshift = days(30), measureFun = strength, effortFun =NULL , effortData = NULL, directed = FALSE) 
+
+#rbm
+gr.troop<- all_grooming%>% filter(TroopID=="rbm"& Date> "2014-06-01")
+strength.rbm.gr<-nodeTS(gr.troop,windowsize = days(60), windowshift = days(30), measureFun = strength, effortFun = NULL, effortData = NULL,directed = FALSE)
+
+#pt
+gr.troop<- all_grooming%>% filter(TroopID=="pt"& Date> "2014-06-01")
+strength.pt.gr<-nodeTS(gr.troop,windowsize = days(60), windowshift = days(30), measureFun = strength, effortFun = NULL, effortData = NULL,directed = FALSE)
+
+## SET UP finale df
+#rst
+data.long.rst.gr <- reshape2::melt(strength.rst.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.rst.gr)[names(data.long.rst.gr) == "variable"] <- "ID"
+names(data.long.rst.gr)[names(data.long.rst.gr) == "value"] <- "strength"
+data.long.rst.gr$troop<-"rst"
+
+# rbm
+data.long.rbm.gr <- reshape2::melt(strength.rbm.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.rbm.gr)[names(data.long.rbm.gr) == "variable"] <- "ID"
+names(data.long.rbm.gr)[names(data.long.rbm.gr) == "value"] <- "strength"
+data.long.rbm.gr$troop<-"rbm"
+#pt
+data.long.pt.gr <- reshape2::melt(strength.pt.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.pt.gr)[names(data.long.pt.gr) == "variable"] <- "ID"
+names(data.long.pt.gr)[names(data.long.pt.gr) == "value"] <- "strength"
+data.long.pt.gr$troop<-"pt"
+
+# put degree dfs all together
+strength.gr.troops<- rbind(data.long.pt.gr,data.long.rbm.gr,data.long.rst.gr)
+all.str.gr<-strength.gr.troops[,c("ID", "strength", "windowstart","troop")]
+colnames(all.str.gr)<-c("ID", "strength", "date", "troop")
+
+# Individuals' traits (sex, cohort)
+all.str.gr2<- merge(all.str.gr,id.traits[,c("ID","cohort","sex")], by=c("ID"), all.x=T)
+```
+
+  # degree
+  
+```{r}
+degree_all <- function (net) {
+  degree <-igraph::degree(net, mode=c("all"))
+  return(degree)
+}
+
+#rst
+troop.data <-all_grooming%>% filter(TroopID=="rst"& Date> "2014-06-01")
+degree.rst.gr<-nodeTS(troop.data,windowsize = days(60), windowshift = days(30), measureFun = degree_all, effortFun = NULL, effortData = NULL,directed = FALSE)
+
+#rbm
+troop.data <-all_grooming%>% filter(TroopID=="rbm"& Date> "2014-06-01")
+degree.rbm.gr<-nodeTS(troop.data,windowsize = days(60), windowshift = days(30), measureFun = degree_all, effortFun = NULL, effortData = NULL,directed = FALSE)
+
+#pt
+troop.data <-all_grooming%>% filter(TroopID=="pt"& Date> "2014-06-01")
+degree.pt.gr<-nodeTS(troop.data,windowsize = days(60), windowshift = days(30), measureFun = degree_all, effortFun = NULL, effortData = NULL,directed = FALSE)
+
+## SET UP finale df
+#rst
+data.long.rst.gr <- reshape2::melt(degree.rst.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.rst.gr)[names(data.long.rst.gr) == "variable"] <- "ID"
+names(data.long.rst.gr)[names(data.long.rst.gr) == "value"] <- "degree"
+data.long.rst.gr$troop<-"rst"
+
+# rbm
+data.long.rbm.gr <- reshape2::melt(degree.rbm.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.rbm.gr)[names(data.long.rbm.gr) == "variable"] <- "ID"
+names(data.long.rbm.gr)[names(data.long.rbm.gr) == "value"] <- "degree"
+data.long.rbm.gr$troop<-"rbm"
+
+#pt
+data.long.pt.gr <- reshape2::melt(degree.pt.gr, id = c("windowend", "windowstart",   "nEvents"))
+names(data.long.pt.gr)[names(data.long.pt.gr) == "variable"] <- "ID"
+names(data.long.pt.gr)[names(data.long.pt.gr) == "value"] <- "degree"
+data.long.pt.gr$troop<-"pt"
+
+
+# put degree dfs all together
+degree.gr.troops<- rbind(data.long.pt.gr,data.long.rbm.gr,data.long.rst.gr)
+all.deg.gr<-degree.gr.troops[,c("ID", "degree", "windowstart","troop")]
+colnames(all.deg.gr)<-c("ID", "degree", "date", "troop")
+
+
+# Individuals' traits (sex, cohort)
+all.deg.gr2<- merge(all.deg.gr,id.traits[,c("ID","cohort","sex")], by=c("ID"), all.x=T)
+
+```
+
+# We trim our measures, so that all juveniles' measures start in june for each year of their birth
+
+  # Here we just focus on juveniles and will merge the subset dataframe with the adult one.
+
+```{r}
+cosine.juve <- cosine.gr.tot2 %>% filter(cohort!="A")
+cosine.ad <- cosine.gr.tot2 %>% filter(cohort=="A")
+
+skew.juve <- skew.gr2 %>% filter(cohort!="A")
+skew.ad <- skew.gr2 %>% filter(cohort=="A")
+
+deg.juve <- all.deg.gr2 %>% filter(cohort!="A")
+deg.ad <- all.deg.gr2 %>% filter(cohort=="A")
+
+str.juve <- all.str.gr2 %>% filter(cohort!="A")
+str.ad <- all.str.gr2 %>% filter(cohort=="A")
+```
+
+  # We trim 
+
+```{r}
+# Create the function
+trim_nodes <- function (nodevalues, data) {
+  
+  names.kept <- unique (nodevalues$ID)
+  df.trim <-data.frame(matrix(NA,ncol=6, nrow=))
+  colnames(df.trim) <-c(colnames(nodevalues))
+  df.trim$date<-ymd(df.trim$date)
+  
+  for (i in 1:length(names.kept)) {
+    #i<-1
+    df.temp <- data %>% filter(ID == names.kept[i])
+    
+    min.date <- df.temp[,"appear"]
+    df.temp2 <- nodevalues %>% filter (ID==names.kept[i])
+    df.temp2$windowend <- df.temp2$date + days(60)
+    
+    df.temp2[, "measure"] <- ifelse(df.temp2[, "date"] < min.date,   NA, df.temp2[, "measure"])
+    df.trim <- rbind(df.trim, df.temp2[,c(1:6)])
+  }
+  df.trim <- df.trim[-1,]
+  
+  return(df.trim)
+}
+
+## Extract the appearance date in the scans for each juvenile
+df.appear <-data.frame(matrix(NA,ncol=3, nrow=))
+colnames(df.appear)<-c("ID", "appear", "gone")
+df.appear$appear<-ymd(df.appear$appear)
+df.appear$gone<-ymd(df.appear$gone)
+
+juve.id<- id.traits%>%filter(cohort !="A")
+names.kept<-unique(juve.id$ID)
+
+for (i in 1:length(names.kept)) {
+  
+  df.temp <- scan.data2 %>% filter(ID == names.kept[i] |   Partner == names.kept[i])
+  min.date <- min(df.temp$Date)
+  max.date <- max(df.temp$Date)
+  temp.df<- data.frame(ID=names.kept[i],appear=min.date, gone=max.date )
+  df.appear <- rbind(df.appear, temp.df)
+}
+df.appear <- df.appear[-1,]
+
+# merge with cohort ID
+df.appearance<-merge(df.appear, id.traits[,c("ID","cohort")], by="ID")
+df.appearance<-distinct(df.appearance)
+
+# attribute mid june as appear date for 2014 cohort.
+cohort14<-df.appearance%>% filter(cohort=="2014")
+cohort15<-df.appearance%>% filter(cohort=="2015")
+cohort.rest<-df.appearance%>% filter(cohort!="2014" & cohort!="2015")
+cohort14$appear<-ymd("2015-06-01")
+cohort15$appear<-ymd("2016-10-01")
+cohort.rest$appear<- ymd("2014-06-10")
+
+df.appearance<- rbind(cohort.rest,cohort14,cohort15)
+
+# Cosine
+colnames(cosine.juve)[2]<-"measure"
+cos.gr.pt <- cosine.juve %>% filter( troop =="pt")
+cos.gr.pt.t<-trim_nodes(cos.gr.pt, df.appearance)
+cos.gr.pt.t<- cos.gr.pt.t[complete.cases(cos.gr.pt.t),]
+
+cos.gr.rbm <- cosine.juve %>% filter( troop =="rbm")
+cos.gr.rbm.t<-trim_nodes(cos.gr.rbm, df.appearance)
+cos.gr.rbm.t<- cos.gr.rbm.t[complete.cases(cos.gr.rbm.t),]
+
+cos.gr.rst <- cosine.juve %>% filter( troop =="rst")
+cos.gr.rst.t<-trim_nodes(cos.gr.rst, df.appearance)
+cos.gr.rst.t<- cos.gr.rst.t[complete.cases(cos.gr.rst.t),]
+
+cos.gr.raw<- rbind (cos.gr.pt.t,cos.gr.rbm.t,cos.gr.rst.t)
+colnames(cos.gr.raw)[2]<-"cosine"
+
+# merge back with adult
+cos.gr.all<-rbind(cos.gr.raw,cosine.ad)
+
+# Skewness
+colnames(skew.juve)[2]<-"measure"
+skew.gr.pt <- skew.juve %>% filter( troop =="pt")
+skew.gr.pt.t<-trim_nodes(skew.gr.pt, df.appearance)
+skew.gr.pt.t<- skew.gr.pt.t[complete.cases(skew.gr.pt.t),]
+
+skew.gr.rbm <- skew.juve %>% filter( troop =="rbm")
+skew.gr.rbm.t<-trim_nodes(skew.gr.rbm, df.appearance)
+skew.gr.rbm.t<- skew.gr.rbm.t[complete.cases(skew.gr.rbm.t),]
+
+skew.gr.rst <- skew.juve %>% filter( troop =="rst")
+skew.gr.rst.t<-trim_nodes(skew.gr.rst, df.appearance)
+skew.gr.rst.t<- skew.gr.rst.t[complete.cases(skew.gr.rst.t),]
+
+skew.gr.raw<- rbind (skew.gr.pt.t,skew.gr.rbm.t,skew.gr.rst.t)
+colnames(skew.gr.raw)[2]<-"skewness"
+# merge back with adult
+skew.gr.all<-rbind(skew.gr.raw,skew.ad)
+
+# Strength
+colnames(str.juve)[2]<-"measure"
+str.gr.pt <- str.juve %>% filter( troop =="pt")
+str.gr.pt.t<-trim_nodes(str.gr.pt, df.appearance)
+str.gr.pt.t<- str.gr.pt.t[complete.cases(str.gr.pt.t),]
+
+str.gr.rbm <- str.juve %>% filter( troop =="rbm")
+str.gr.rbm.t<-trim_nodes(str.gr.rbm, df.appearance)
+str.gr.rbm.t<- str.gr.rbm.t[complete.cases(str.gr.rbm.t),]
+
+str.gr.rst <- str.juve %>% filter( troop =="rst")
+str.gr.rst.t<-trim_nodes(str.gr.rst, df.appearance)
+str.gr.rst.t<- str.gr.rst.t[complete.cases(str.gr.rst.t),]
+
+str.gr.raw<- rbind (str.gr.pt.t,str.gr.rbm.t,str.gr.rst.t)
+colnames(str.gr.raw)[2]<-"strength"
+# merge back with adult
+str.gr.all<-rbind(str.gr.raw,str.ad)
+
+# Degree
+colnames(deg.juve)[2]<-"measure"
+deg.gr.pt <- deg.juve %>% filter( troop =="pt")
+deg.gr.pt.t<-trim_nodes(deg.gr.pt, df.appearance)
+deg.gr.pt.t<- deg.gr.pt.t[complete.cases(deg.gr.pt.t),]
+
+deg.gr.rbm <- deg.juve %>% filter( troop =="rbm")
+deg.gr.rbm.t<-trim_nodes(deg.gr.rbm, df.appearance)
+deg.gr.rbm.t<- deg.gr.rbm.t[complete.cases(deg.gr.rbm.t),]
+
+deg.gr.rst <- deg.juve %>% filter( troop =="rst")
+deg.gr.rst.t<-trim_nodes(deg.gr.rst, df.appearance)
+deg.gr.rst.t<- deg.gr.rst.t[complete.cases(deg.gr.rst.t),]
+
+deg.gr.raw<- rbind (deg.gr.pt.t,deg.gr.rbm.t,deg.gr.rst.t)
+colnames(deg.gr.raw)[2]<-"degree"
+# merge back with adult
+deg.gr.all<-rbind(deg.gr.raw,deg.ad)
+
+```
+
+# Attribute predictors
+
+To keep it simple and quick, we first create one whole dataframe that contains the four extracted measures. Then attribute these predictors.
+
+  # Merge the four measures together
+
+```{r}
+deg.gr.all2<-deg.gr.all[complete.cases(deg.gr.all),]
+str.gr.all2<-str.gr.all[complete.cases(str.gr.all),]
+
+measures.df<-merge(deg.gr.all2,str.gr.all2, by=c("ID", "date","troop","sex", "cohort"), all=T )
+measures.df2<-merge(measures.df,skew.gr.all, by=c("ID", "date","troop","sex", "cohort"), all=T )
+measures.df3<-merge(measures.df2,cos.gr.all, by=c("ID", "date","troop","sex", "cohort"), all=T )
+```
+
+  # Sampling effort (the number of scans)
+
+```{r}
+# Create a dataframe to store values
+value.df<- data.frame(matrix(NA,ncol=3))
+colnames(value.df)<- c("scan_nb","troop", "date")
+value.df$date<- as.Date(value.df$date)
+
+for (l in unique(measures.df3$troop)){
+  
+  # select the troop 
+  troop.data <-scan.data2%>% filter(troop==l & Date> "2014-06-01")
+  troop.sub<-measures.df3%>% filter(troop==l)
+  windowstart<- min(troop.sub$date)
+  windowend <- windowstart+ windowsize
+  
+  while (windowstart + windowsize <= max(troop.data$Date)) {
+    
+    window.df <-create.window(troop.data, windowstart, windowend)
+    
+    temp.df<-data.frame(troop=l, date=as.Date(windowstart),scan_nb= length(unique(window.df$Scan)))
+    value.df<-rbind(value.df,temp.df)
+    
+    windowend = windowend + windowshift
+    windowstart= windowstart+ windowshift
+  }
+}
+
+value.df<-value.df[-1,]
+
+# Merge
+measures.df4<- merge(measures.df3, value.df, by=c("troop", "date"), all.x = TRUE)
+```
+
+  # Age
+
+```{r}
+# Create a dataframe to store values
+age.node<-data.frame(ID="pouit", age=1,  date = as.Date("2015-01-01"), troop="pouit")
+
+for (each in 1:nrow(measures.df4)){
+  
+  date.sub<-measures.df4[each,]
+  
+  age.df<-data.frame(ID="pouit", age=1, date = as.Date("2015-01-01"), troop="pouit")
+  age.df$ID<- date.sub[1,"ID"]
+  birth.ID<-birth.df%>% filter(ID == as.character(date.sub[1,"ID"]))
+  
+  if(is.na(birth.ID[,"birth"])==FALSE){
+    
+    age.df$age<-as.numeric(ymd(date.sub[1,"date"]) - birth.ID[1,"birth"]) +1
+    
+  } else{
+    
+    age.df$age<-NA
+  }
+  
+  age.df$date<- date.sub[1,"date"]
+  age.df$troop<- date.sub[1,"troop"]  
+  
+  age.node<- rbind(age.node, age.df)
+}
+
+age.node<-age.node%>% filter(ID!="pouit")
+
+measures.df5<-merge(measures.df4,age.node, by =c("ID", "date", "troop"), all=T)
+```
+
+  # Troop size
+
+```{r}
+# Create storing dataframe
+troop.size<- data.frame(troop.nb =1, date=as.Date("2001-12-30"), troop="bla")
+
+for (l in unique(scan.data2$troop)){
+  
+  # select the troop from adult
+  troop.data.adult <- scan.data2 %>% filter(troop==l& Date> "2014-06-01" ) 
+  troop.data.adult <- troop.data.adult [order(ymd(troop.data.adult$Date)),]
+  adult.data<-troop.data.adult[,c(1,2,3)]
+  colnames(adult.data)<-c("from", "to", "Date")
+  
+  # min start
+  troop.behav<-measures.df5%>%filter(troop==l)
+  windowstart<- min(troop.behav$date)
+  windowend<-windowstart + windowsize
+  
+  #for( each in 1:length(unique(troop.data.adult$Date))) {
+  while (windowstart + windowsize <= max(adult.data$Date)) {
+    
+    sub.ind<- create.window(adult.data, windowstart, windowend) 
+    nodes_of_interest_adult <- unique(c(unique(sub.ind$from), unique(sub.ind$to))) 
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="0"]
+    nodes_of_interest<- unique(nodes_of_interest_adult) #never too sure
+    
+    #store troop size
+    troop.nb<- length(nodes_of_interest)
+    troop.df<- data.frame(troop.nb=troop.nb, date=windowstart, troop=l )
+    troop.size<-rbind(troop.size,troop.df)
+    
+    windowend = windowend + windowshift
+    windowstart= windowstart+ windowshift
+    
+  }
+}
+troop.size<-troop.size[-1,]
+
+measures.df6<-merge(measures.df5,troop.size, by =c("date", "troop"), all=T)
+
+```
+
+  # mum ID 
+  
+```{r}
+measures.df7<-merge(measures.df6,mumid.data[,c("ID", "mumID")], by ="ID", all.x=T)
+```
+
+  # Environmental variable (NDVI)
+
+```{r}
+measures.df8<-merge(measures.df7, ndvi.df, by=c("troop", "date"), all.x = TRUE)
+```
+
+  # Elo ratings
+
+```{r}
+## Create storing df
+elo.r.df<- data.frame(elo.r=1,  troop="pouit",  date = as.Date("2015-01-01"),ID="pouit")
+elo.r.df$date<-as.Date(elo.r.df$date)
+
+for( j in unique(measures.df8$troop)){
+  
+  troop.df<-measures.df8%>%filter(troop==j)
+  domi.troop<-dominance.data%>%filter(Troop==j)
+  
+  for (i in 1:length(unique(troop.df$date))){
+    
+    windowstart<- as.Date(unique(troop.df$date)[i]) %m-% months(5) # burn-in period
+    windowend<-windowstart + windowsize
+    
+    df.subset <- create.window(domi.troop[,c(3,4,1,2,5:7)], windowstart, windowend) # subset juveniles
+    
+    if(nrow(df.subset)>1){
+      
+      SEQ <- elo.seq(winner=df.subset$winner, loser=df.subset$loser, Date=df.subset$Date, runcheck=FALSE)
+      
+      ranks.elo<-data.frame(extract_elo(SEQ, max(df.subset$Date), standardize=TRUE))
+      
+      ranks.elo$troop<-j
+      ranks.elo$date<- windowstart
+      ranks.elo$ID<-rownames(ranks.elo)
+      rownames(ranks.elo) <- NULL
+      colnames(ranks.elo)[1]<-"elo.r"
+      
+      ## Store 
+      elo.r.df<-rbind(elo.r.df,ranks.elo)
+    }
+  }
+}
+
+
+elo.r.df<-elo.r.df[-1,]
+
+measures.df9<-merge(measures.df8,elo.r.df, by=c("ID", "date","troop"), all.x=TRUE)
+```
+
+#### MODELLING TIME
+
+  # Juvenile females
+
+```{r}
+juvenile.f.measures <-measures.df9%>% filter(cohort!="A" & sex==1)
+
+```
+
+    # Degree
+
+```{r}
+degree.gr.df.rank<-juvenile.f.measures %>% dplyr::select(degree, age, mumID, ID, cohort, troop, troop.nb, NDVI, scan_nb, elo.r) 
+degree.gr.df.rank<- degree.gr.df.rank[complete.cases(degree.gr.df.rank),]
+degree.gr.df.rank2<-distinct(degree.gr.df.rank)
+
+degree.gr.df.rank2$age.s <- scale(degree.gr.df.rank2$age)
+degree.gr.df.rank2$scan.nb.s <- scale(degree.gr.df.rank2$scan_nb)
+degree.gr.df.rank2$troop.nb.s<-scale(degree.gr.df.rank2$troop.nb)
+degree.gr.df.rank2$ndvi.s<-scale(degree.gr.df.rank2$NDVI)
+degree.gr.df.rank2$rank.s<-scale(degree.gr.df.rank2$elo.r)
+
+bigass_bf <- bf(degree ~ s(age.s, m=2) + s(age.s, ID, bs="fs", m=1)+ s(cohort, bs="re",k=3) + s(troop, bs="re", k=3)+ s(age.s, mumID, bs="fs", m=1) + s(scan.nb.s, bs="tp")+ s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp")+s(rank.s, bs="tp"))
+
+fit.degree.gr<- brm(bigass_bf, data=degree.gr.df.rank2, family = poisson(), prior=set_prior ("normal(0,1)",class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck1 <-pp_check(fit.degree.gr, type = "bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_deg_juve.png",ppcheck1 ,width = 7, height = 5, dpi = 300)
+
+# check for potential dispersion issues
+PosteriorPredictions <-predict(fit.degree.gr, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- degree.gr.df.rank2$degree
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+# Extracting summary of the model
+model_summary <- summary(fit.degree.gr)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.degree.gr)
+
+```
+
+    # Strength
+
+```{r}
+strength.gr.df <-juvenile.f.measures %>% dplyr::select(strength, age, mumID, ID, cohort, troop, troop.nb, NDVI, scan_nb, elo.r) 
+
+strength.gr.df<- strength.gr.df[complete.cases(strength.gr.df),]
+strength.gr.df2<-distinct(strength.gr.df)
+
+strength.gr.df2$age.s <- scale(strength.gr.df2$age)
+strength.gr.df2$scan.nb.s <- scale(strength.gr.df2$scan_nb)
+strength.gr.df2$troop.nb.s<-scale(strength.gr.df2$troop.nb)
+strength.gr.df2$ndvi.s<-scale(strength.gr.df2$NDVI)
+strength.gr.df2$rank.s <- scale(strength.gr.df2$elo.r)
+
+
+bigass_bf <- bf(strength ~ s(age.s, m=2) + s(age.s, ID, bs="fs", m=1)+ s(cohort, bs="re",k=3) + s(troop, bs="re", k=3)+ s(age.s, mumID, bs="fs", m=1) + s(scan.nb.s, bs="tp")+ s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp")+s(rank.s, bs="tp"))
+
+fit.str.gr.mod <- brm(bigass_bf, data=strength.gr.df2, family = poisson(), prior=set_prior ("normal(0,1)", class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10)) 
+
+
+ppcheck2 <-pp_check(fit.str.gr.mod, type = "bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_str_juve.png",ppcheck2 ,width = 7, height = 5, dpi = 300)
+
+# Check for potential dispersion issues
+PosteriorPredictions <-predict(fit.str.gr.mod, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- strength.gr.df2$strength #this df can't have any NAs in it
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+
+# Extracting summary of the model
+model_summary <- summary(fit.str.gr.mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.str.gr.mod)
+```
+
+    # Skewness
+
+```{r}
+juvenile.f.min.deg<-juvenile.f.measures%>% filter(degree >2) # because skewness can't be inferred with less than 2 partners (i.e., two values)
+skew.gr.df <-juvenile.f.min.deg %>% dplyr::select(skewness, age, mumID, ID, cohort, troop, troop.nb, NDVI, sex,scan_nb, elo.r) 
+
+skew.gr.df<- skew.gr.df[complete.cases(skew.gr.df),]
+skew.gr.df2<-distinct(skew.gr.df)
+
+skew.gr.df2$age.s <- scale(skew.gr.df2$age)
+skew.gr.df2$scan.nb.s <- scale(skew.gr.df2$scan_nb)
+skew.gr.df2$troop.nb.s<-scale(skew.gr.df2$troop.nb)
+skew.gr.df2$ndvi.s<-scale(skew.gr.df2$NDVI)
+skew.gr.df2$rank.s<- scale(skew.gr.df2$elo.r)
+
+
+bigass_bf <- bf(skewness ~ s(age.s, m=2) + s(age.s, ID, bs="fs", m=1)+ s(cohort, bs="re",k=3) + s(troop, bs="re", k=3)+ s(age.s, mumID, bs="fs", m=1) + s(scan.nb.s, bs="tp")+ s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp")+s(rank.s, bs="tp"))
+
+fit.skewness.gr.mod<- brm(bigass_bf, data=skew.gr.df2, family = skew_normal(), prior=set_prior ("normal(0,1)", class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10)) 
+
+
+ppcheck3 <-pp_check(fit.skewness.gr.mod)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_skew_juve.png",ppcheck3 ,width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(fit.skewness.gr.mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.skewness.gr.mod)
+
+```
+
+    # Cosine similarity
+
+```{r}
+cosine.gr.df<-juvenile.f.measures%>% dplyr::select(cosine, age, mumID, ID, cohort, troop, troop.nb, NDVI,scan_nb, elo.r) 
+
+cosine.gr.df<- cosine.gr.df[complete.cases(cosine.gr.df),]
+cosine.gr.df2<-distinct(cosine.gr.df)
+
+cosine.gr.df2$age.s <- scale(cosine.gr.df2$age)
+cosine.gr.df2$scan.nb.s <- scale(cosine.gr.df2$scan_nb)
+cosine.gr.df2$troop.nb.s<-scale(cosine.gr.df2$troop.nb)
+cosine.gr.df2$ndvi.s<-scale(cosine.gr.df2$NDVI)
+cosine.gr.df2$rank.s<-scale(cosine.gr.df2$elo.r)
+
+bigass_bf <- bf(cosine ~ s(age.s, m=2) + s(age.s, ID, bs="fs", m=1)+ s(cohort, bs="re",k=3) + s(troop, bs="re", k=3)+ s(age.s, mumID, bs="fs", m=1) + s(scan.nb.s, bs="tp")+ s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp")+s(rank.s, bs="tp"))
+
+fit.cos.gr.mod<- brm(bigass_bf, data=cosine.gr.df2, family = zero_one_inflated_beta(link = "logit",link_phi = "log",link_zoi = "logit",link_coi = "logit"), prior=set_prior ("normal(0,1)", class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11), cores = 4, backend = "cmdstanr", threads = threading(10))
+
+ppcheck4 <-pp_check(fit.cos.gr.mod)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))+scale_x_continuous(labels =c('0','0.25','0.5','0.75','1'))
+ggsave("ppcheck_cos_juve.png",ppcheck4 ,width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(fit.cos.gr.mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.cos.gr.mod)
+```
+
+
+  # Adult females
+
+```{r}
+adult.f.measures <-measures.df9 %>% filter (cohort =="A" & sex==1)
+```
+
+    # Degree
+
+```{r}
+degree.gr.af<-adult.f.measures %>% dplyr::select(degree, date, ID, cohort, troop, troop.nb, NDVI, scan_nb, elo.r) 
+
+degree.gr.af<-degree.gr.af[complete.cases(degree.gr.af),]
+degree.gr.af2<-distinct(degree.gr.af)
+
+degree.gr.af2$yday<-yday(ymd(degree.gr.af2$date))
+degree.gr.af2$yday.s<-scale(degree.gr.af2$yday)
+degree.gr.af2$day.nb<- as.numeric(degree.gr.af2$date)-min(as.numeric(degree.gr.af2$date)) + yday(min(degree.gr.af2$date))
+degree.gr.af2$day.nb.s<-scale(degree.gr.af2$day.nb)
+degree.gr.af2$ndvi.s<-scale(degree.gr.af2$NDVI)
+degree.gr.af2$troop.nb.s<-scale(degree.gr.af2$troop.nb)
+degree.gr.af2$scan.nb.s<-scale(degree.gr.af2$scan_nb)
+degree.gr.af2$rank.s<-scale(degree.gr.af2$elo.r)
+
+# Poisson family
+prop_mod <- bf(degree ~ s(day.nb.s, m=2) +  s(day.nb.s, ID, bs="fs", m=1)+ s(troop, bs="re", k=3)+ s(yday.s,bs="cc") + s(scan.nb.s, bs="tp") + s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp") + s(rank.s, bs="tp"))
+
+fit.degree.af <- brm(prop_mod, data=degree.gr.af2, family = poisson(), prior=set_prior("normal(0,1)", class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(fit.degree.af)
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(fit.degree.af, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- degree.gr.af2$degree
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+ppcheck5 <-pp_check(fit.degree.af, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_deg_AF.png",ppcheck5 ,width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(fit.degree.af)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.degree.af)
+```
+
+    # Strength
+
+```{r}
+str.gr.af<-adult.f.measures %>% dplyr::select(strength, date, ID, cohort, troop, troop.nb, NDVI,scan_nb, elo.r)
+
+str.gr.af<-str.gr.af[complete.cases(str.gr.af),]
+str.gr.af2<-distinct(str.gr.af)
+
+# Scale our variables
+str.gr.af2$ndvi.s<-scale(str.gr.af2$NDVI)
+str.gr.af2$troop.nb.s<-scale(str.gr.af2$troop.nb)
+str.gr.af2$scan.nb.s<-scale(str.gr.af2$scan_nb)
+str.gr.af2$rank.s<-scale(str.gr.af2$elo.r)
+str.gr.af2$yday<-yday(ymd(str.gr.af2$date))
+str.gr.af2$yday.s<-scale(str.gr.af2$yday)
+str.gr.af2$day.nb<- as.numeric(str.gr.af2$date)-as.numeric(min(str.gr.af2$date))+ yday(min(str.gr.af2$date))
+str.gr.af2$day.nb.s<-scale(str.gr.af2$day.nb)
+
+# Poisson family
+prop_mod <- bf(strength ~ s(day.nb.s, m=2) +  s(day.nb.s, ID, bs="fs", m=1)+ s(troop, bs="re", k=3)+ s(yday.s,bs="cc") + s(scan.nb.s, bs="tp") + s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp") + s(rank.s, bs="tp"))
+
+fit.strength.af <- brm(prop_mod, data=str.gr.af2, family = poisson(), prior=set_prior("normal(0,1)",class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck6 <-pp_check(fit.strength.af, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_str_AF.png",ppcheck6 ,width = 7, height = 5, dpi = 300)
+
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(fit.strength.af, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.gr.af2$strength
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+# Extracting summary of the model
+model_summary <- summary(fit.strength.af)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.strength.af)
+```
+
+    # Skewness
+
+```{r}
+af.f.min.deg<-adult.f.measures%>% filter(degree >2) # because skewness can't be inferred with less than 2 partners (i.e., two values)
+
+af.f.skew<-af.f.min.deg %>% dplyr::select(skewness, date, ID, cohort, troop, troop.nb, NDVI,scan_nb, elo.r)
+af.f.skew2<-af.f.skew[complete.cases(af.f.skew),]
+af.f.skew2<-distinct(af.f.skew2)
+
+af.f.skew2$ndvi.s<-scale(af.f.skew2$NDVI)
+af.f.skew2$scan.nb.s<-scale(af.f.skew2$scan_nb)
+af.f.skew2$troop.nb.s<-scale(af.f.skew2$troop.nb)
+af.f.skew2$rank.s<-scale(af.f.skew2$elo.r)
+af.f.skew2$yday<-yday(ymd(af.f.skew2$date))
+af.f.skew2$yday.s<-scale(af.f.skew2$yday)
+af.f.skew2$day.nb<- as.numeric(af.f.skew2$date)-as.numeric(min(af.f.skew2$date))+ yday(min(af.f.skew2$date))
+af.f.skew2$day.nb.s<-scale(af.f.skew2$day.nb)
+
+prop_mod <- bf(skewness  ~ s(day.nb.s, m=2) +  s(day.nb.s, ID, bs="fs", m=1)+ s(troop, bs="re", k=3)+ s(yday.s,bs="cc") + s(scan.nb.s, bs="tp") + s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp") + s(rank.s, bs="tp"))
+
+fit.skew.af <- brm(prop_mod, data=af.f.skew2, family = skew_normal(), prior=set_prior("normal(0,1)", class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11),cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck7 <-pp_check(fit.skew.af)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_skew_AF.png",ppcheck7 ,width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(fit.skew.af)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.skew.af)
+```
+
+    # Cosine similarity
+
+```{r}
+af.f.cosine<-adult.f.measures %>% dplyr::select(cosine, date, ID, cohort, troop, troop.nb, NDVI,scan_nb, elo.r)
+af.f.cosine2<-af.f.cosine[complete.cases(af.f.cosine),]
+af.f.cosine2<-distinct(af.f.cosine2)
+
+# Scale our variables
+af.f.cosine2$scan.nb.s<-scale(af.f.cosine2$scan_nb)
+af.f.cosine2$ndvi.s<-scale(af.f.cosine2$NDVI)
+af.f.cosine2$troop.nb.s<-scale(af.f.cosine2$troop.nb)
+af.f.cosine2$rank.s<-scale(af.f.cosine2$elo.r)
+af.f.cosine2$yday<-yday(ymd(af.f.cosine2$date))
+af.f.cosine2$yday.s<-scale(af.f.cosine2$yday)
+af.f.cosine2$day.nb<- as.numeric(af.f.cosine2$date)-as.numeric(min(af.f.cosine2$date)) +yday(min(af.f.cosine2$date))
+af.f.cosine2$day.nb.s<-scale(af.f.cosine2$day.nb)
+
+# Model
+prop_mod <- bf(cosine ~ s(day.nb.s, m=2) +  s(day.nb.s, ID, bs="fs", m=1)+ s(troop, bs="re", k=3)+ s(yday.s,bs="cc") + s(scan.nb.s, bs="tp") + s(ndvi.s, bs="tp") +s(troop.nb.s, bs="tp") + s(rank.s, bs="tp"))
+
+fit.cosine.af <- brm(prop_mod, data=af.f.cosine2, family = zero_inflated_beta(), prior=set_prior("normal(0,1)",class="b"), iter = 2000, chains=4, control = list(adapt_delta = 0.95, max_treedepth = 11), cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck8 <-pp_check(fit.cosine.af)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm")) +scale_x_continuous(labels =c('0','0.25','0.5','0.75','1'))
+ggsave("ppcheck_cos_AF.png",ppcheck8 ,width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(fit.cosine.af)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(fit.cosine.af)
+```
+
+### PLOTS WITH THE GROOMING EGO-NETWORK PREDICTIONS OF JUVENILES WITH THE PREDICTION OF THE ADULTS ONES ###
+
+  ## ADULT FEMALE PREDICTIONS
+
+    # Degree
+
+```{r}
+proto.gr.degree <- conditional_effects(fit.degree.af, 'day.nb.s', plot=FALSE)
+proto.degree.gr.df<- as.data.frame(do.call(rbind.data.frame, proto.gr.degree)) 
+
+#  Create dataframe
+df.pred<- data.frame(day.nb.s = 1, ID= as.character("disn"), troop="PT",yday.s= 1, troop.nb.s=1, scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(degree.gr.af2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-degree.gr.af2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(day.nb.s=seq(from=min(df.sub2$day.nb.s), to= max(df.sub2$day.nb.s), length.out=100), ID=as.character(names.of.ind[i]),troop = proto.degree.gr.df[1,"troop"], yday.s=proto.degree.gr.df[1,"yday.s"],troop.nb.s=proto.degree.gr.df[1,"troop.nb.s"], scan.nb.s=proto.degree.gr.df[1,"scan.nb.s"], ndvi.s=proto.degree.gr.df[1,"ndvi.s"], rank.s=proto.degree.gr.df[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$day.nb.s<-round(df.pred$day.nb.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_degree_gr <- fitted(fit.degree.af, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.degree.gr<- as.data.frame(t(pred_ID_degree_gr))
+pred.df.degree.gr<-cbind(df.pred,fitted.degree.gr) 
+
+mean_fitted_degree_gr<-aggregate(x = pred.df.degree.gr[,c(9:4008)], by = list(pred.df.degree.gr$troop), FUN = mean)
+colnames(mean_fitted_degree_gr)[1]<-"troop"
+
+df<-t(mean_fitted_degree_gr)
+df.ave.degree<-data.frame(df[-1,])
+colnames(df.ave.degree)<-"mean"
+df.ave.degree$mean<-as.numeric(as.character(df.ave.degree$mean))
+```
+
+    # Strength
+
+```{r}
+proto.gr.str <- conditional_effects(fit.strength.af, 'day.nb.s', plot=FALSE)
+proto.str.gr.df<- as.data.frame(do.call(rbind.data.frame, proto.gr.str)) 
+
+#  Create dataframe
+df.pred<- data.frame(day.nb.s = 1, ID= as.character("disn"), troop="PT",yday.s= 1, troop.nb.s=1, scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(str.gr.af2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-str.gr.af2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(day.nb.s=seq(from=min(df.sub2$day.nb.s), to= max(df.sub2$day.nb.s), length.out=100), ID=as.character(names.of.ind[i]),troop = proto.degree.gr.df[1,"troop"], yday.s=proto.degree.gr.df[1,"yday.s"],troop.nb.s=proto.degree.gr.df[1,"troop.nb.s"], scan.nb.s=proto.degree.gr.df[1,"scan.nb.s"], ndvi.s=proto.degree.gr.df[1,"ndvi.s"], rank.s=proto.degree.gr.df[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$day.nb.s<-round(df.pred$day.nb.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_str_gr <- fitted(fit.strength.af, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.str.gr<- as.data.frame(t(pred_ID_str_gr))
+pred.df.str.gr<-cbind(df.pred,fitted.str.gr) 
+
+mean_fitted_str_gr<-aggregate(x = pred.df.str.gr[,c(9:4008)], by = list(pred.df.str.gr$troop), FUN = mean)
+colnames(mean_fitted_str_gr)[1]<-"troop"
+
+df<-t(mean_fitted_str_gr)
+df.ave.str<-data.frame(df[-1,])
+colnames(df.ave.str)<-"mean"
+df.ave.str$mean<-as.numeric(as.character(df.ave.str$mean))
+```
+
+    # Skewness
+
+```{r}
+proto.gr.skew <- conditional_effects(fit.skew.af, 'day.nb.s', plot=FALSE)
+proto.skew.gr.df<- as.data.frame(do.call(rbind.data.frame, proto.gr.skew)) 
+
+#  Create dataframe
+df.pred<- data.frame(day.nb.s = 1, ID= as.character("disn"), troop="PT",yday.s= 1, troop.nb.s=1, scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(af.f.skew2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-af.f.skew2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(day.nb.s=seq(from=min(df.sub2$day.nb.s), to= max(df.sub2$day.nb.s), length.out=100), ID=as.character(names.of.ind[i]),troop = proto.degree.gr.df[1,"troop"], yday.s=proto.degree.gr.df[1,"yday.s"],troop.nb.s=proto.degree.gr.df[1,"troop.nb.s"], scan.nb.s=proto.degree.gr.df[1,"scan.nb.s"], ndvi.s=proto.degree.gr.df[1,"ndvi.s"], rank.s=proto.degree.gr.df[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$day.nb.s<-round(df.pred$day.nb.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_skew_gr <- fitted(fit.skew.af, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.skew.gr<- as.data.frame(t(pred_ID_skew_gr))
+pred.df.skew.gr<-cbind(df.pred,fitted.skew.gr) 
+
+mean_fitted_skew_gr<-aggregate(x = pred.df.skew.gr[,c(9:4008)], by = list(pred.df.skew.gr$troop), FUN = mean)
+colnames(mean_fitted_skew_gr)[1]<-"troop"
+
+df<-t(mean_fitted_skew_gr)
+df.ave.skew <-data.frame(df[-1,])
+colnames(df.ave.skew)<-"mean"
+df.ave.skew$mean<-as.numeric(as.character(df.ave.skew$mean))
+```
+
+    # Cosine similarity
+
+```{r}
+proto.gr.cos <- conditional_effects(fit.cosine.af, 'day.nb.s', plot=FALSE)
+proto.cos.gr.df<- as.data.frame(do.call(rbind.data.frame, proto.gr.cos)) 
+
+#  Create dataframe
+df.pred<- data.frame(day.nb.s = 1, ID= as.character("disn"), troop="PT",yday.s= 1, troop.nb.s=1, scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(af.f.cosine2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-af.f.cosine2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(day.nb.s=seq(from=min(df.sub2$day.nb.s), to= max(df.sub2$day.nb.s), length.out=100), ID=as.character(names.of.ind[i]),troop = proto.degree.gr.df[1,"troop"], yday.s=proto.degree.gr.df[1,"yday.s"],troop.nb.s=proto.degree.gr.df[1,"troop.nb.s"], scan.nb.s=proto.degree.gr.df[1,"scan.nb.s"], ndvi.s=proto.degree.gr.df[1,"ndvi.s"], rank.s=proto.degree.gr.df[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+
+df.pred<- df.pred[-1,]
+df.pred$day.nb.s<-round(df.pred$day.nb.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_cos_gr <- fitted(fit.cosine.af, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.cos.gr<- as.data.frame(t(pred_ID_cos_gr))
+pred.df.cos.gr<-cbind(df.pred,fitted.cos.gr) 
+
+mean_fitted_cos_gr<-aggregate(x = pred.df.cos.gr[,c(9:4008)], by = list(pred.df.cos.gr$troop), FUN = mean)
+colnames(mean_fitted_cos_gr)[1]<-"troop"
+
+df<-t(mean_fitted_cos_gr)
+df.ave.cos <-data.frame(df[-1,])
+colnames(df.ave.cos)<-"mean"
+df.ave.cos$mean<-as.numeric(as.character(df.ave.cos$mean))
+```
+
+  ## JUVENILE FEMALE PREDICTIONS
+
+    # Degree
+
+```{r}
+proto.gr.degree.sex <- conditional_effects(fit.degree.gr, 'age.s', plot=FALSE)
+proto.degree.sex.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.degree.sex))
+
+#  Dataframe
+df.pred<- data.frame(age.s = -1.582302, ID= as.character("disn"), troop="PT",cohort= "2013", mumID= as.character("pouit"), troop.nb.s=1,scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(degree.gr.df.rank2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-degree.gr.df.rank2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(age.s=seq(from=min(df.sub2$age.s), to= max(df.sub2$age.s),length.out=100), ID=as.character(names.of.ind[i]),troop = df.sub2[1,"troop"], cohort=df.sub2[1,"cohort"],  mumID= as.character(df.sub2[1,"mumID"]),  troop.nb.s=proto.degree.sex.gr[1,"troop.nb.s"], scan.nb.s =proto.degree.sex.gr[1,"scan.nb.s"], ndvi.s=proto.degree.sex.gr[1,"ndvi.s"], rank.s= proto.degree.sex.gr[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$age.s<-round(df.pred$age.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+df.pred$mumID<-as.character(df.pred$mumID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_degree_gr_sex <- fitted(fit.degree.gr, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.degree.gr.sex<- as.data.frame(t(pred_ID_degree_gr_sex))
+pred.df.degree.gr<-cbind(df.pred,fitted.degree.gr.sex) 
+
+mean_fitted_degree_gr_sex<-aggregate(x = pred.df.degree.gr[,c(10:4009)], by = list(pred.df.degree.gr$age.s), FUN = mean)
+colnames(mean_fitted_degree_gr_sex)[1]<-"age.s"
+
+# get the mean of the iteration average 
+temp.df<-data.frame(age.s=1,mean=1, lci=1, uci=1)
+df.fitted.mean.degree.sex.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_degree_gr_sex)){
+  
+  temp.df$age.s<-mean_fitted_degree_gr_sex[each,1]
+  temp.df$mean<-mean(as.numeric(mean_fitted_degree_gr_sex[each,2:4001]))
+  global.ci<-apply(mean_fitted_degree_gr_sex[each,2:4001],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.degree.sex.gr <- rbind(df.fitted.mean.degree.sex.gr, temp.df)
+}
+
+df.fitted.mean.degree.sex.gr$age<-df.fitted.mean.degree.sex.gr$age.s * attributes(degree.gr.df.rank2$age.s)$`scaled:scale` + attributes(degree.gr.df.rank2$age.s)$`scaled:center`
+
+
+df.fitted.mean.degree.sex.gr$age<-(as.integer(df.fitted.mean.degree.sex.gr$age))
+df.degree.sex.gr.restricted.poisson<-df.fitted.mean.degree.sex.gr%>% filter(age>224)
+```
+
+    # Strength
+
+```{r}
+proto.gr.str.sex <- conditional_effects(fit.str.gr.mod, 'age.s', plot=FALSE)
+proto.str.sex.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.str.sex)) # allows us to get the mean for all predictors
+
+#  ID lines
+df.pred<- data.frame(age.s = -1.582302, ID= as.character("disn"), troop="PT",cohort= "2013", mumID= as.character("pouit"), troop.nb.s=1,scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(strength.gr.df2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-strength.gr.df2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(age.s=seq(from=min(df.sub2$age.s), to= max(df.sub2$age.s),length.out=100), ID=as.character(names.of.ind[i]),troop = df.sub2[1,"troop"], cohort=df.sub2[1,"cohort"],  mumID= as.character(df.sub2[1,"mumID"]),  troop.nb.s=proto.degree.sex.gr[1,"troop.nb.s"], scan.nb.s =proto.degree.sex.gr[1,"scan.nb.s"], ndvi.s=proto.degree.sex.gr[1,"ndvi.s"], rank.s= proto.degree.sex.gr[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$age.s<-round(df.pred$age.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+df.pred$mumID<-as.character(df.pred$mumID)
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_str_gr_sex <- fitted(fit.str.gr.mod, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.str.gr.sex<- as.data.frame(t(pred_ID_str_gr_sex))
+
+pred.df.str.gr<-cbind(df.pred,fitted.str.gr.sex) 
+
+mean_fitted_str_gr_sex<-aggregate(x = pred.df.str.gr[,c(10:4009)], by = list(pred.df.str.gr$age.s), FUN = mean)
+colnames(mean_fitted_str_gr_sex)[1]<-"age.s"
+
+
+# get the mean of the iteration average 
+temp.df<-data.frame(age.s=1, mean=1, lci=1, uci=1)
+df.fitted.mean.str.sex.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_str_gr_sex)){
+  
+  temp.df$age.s<-mean_fitted_str_gr_sex[each,1]
+  temp.df$sex<-mean_fitted_str_gr_sex[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_str_gr_sex[each,2:4001]))
+  global.ci<-apply(mean_fitted_str_gr_sex[each,2:4001],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.str.sex.gr <- rbind(df.fitted.mean.str.sex.gr, temp.df)
+}
+
+df.fitted.mean.str.sex.gr$age<-df.fitted.mean.str.sex.gr$age.s * attributes(strength.gr.df2$age.s)$`scaled:scale` + attributes(strength.gr.df2$age.s)$`scaled:center`
+
+df.fitted.mean.str.sex.gr$age<-(as.integer(df.fitted.mean.str.sex.gr$age))
+df.str.sex.gr.restricted<-df.fitted.mean.str.sex.gr%>% filter(age>224)
+```
+
+    # Skewness
+
+```{r}
+proto.gr.skew.sex <- conditional_effects(fit.skewness.gr.mod, 'age.s', plot=FALSE)
+proto.skew.sex.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.skew.sex)) # allows us to get the mean for all predictors
+
+#  ID lines
+df.pred<- data.frame(age.s = -1.582302, ID= as.character("disn"), troop="PT",cohort= "2013", mumID= as.character("pouit"), troop.nb.s=1,scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(skew.gr.df2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-skew.gr.df2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(age.s=seq(from=min(df.sub2$age.s), to= max(df.sub2$age.s),length.out=100), ID=as.character(names.of.ind[i]),troop = df.sub2[1,"troop"], cohort=df.sub2[1,"cohort"],  mumID= as.character(df.sub2[1,"mumID"]),  troop.nb.s=proto.degree.sex.gr[1,"troop.nb.s"], scan.nb.s =proto.degree.sex.gr[1,"scan.nb.s"], ndvi.s=proto.degree.sex.gr[1,"ndvi.s"], rank.s= proto.degree.sex.gr[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$age.s<-round(df.pred$age.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+df.pred$mumID<-as.character(df.pred$mumID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_skew_gr_sex <- fitted(fit.skewness.gr.mod, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.skew.gr.sex<- as.data.frame(t(pred_ID_skew_gr_sex))
+pred.df.skew.gr<-cbind(df.pred,fitted.skew.gr.sex) 
+
+mean_fitted_skew_gr_sex<-aggregate(x = pred.df.skew.gr[,c(10:4009)], by = list(pred.df.skew.gr$age.s), FUN = mean)
+colnames(mean_fitted_skew_gr_sex)[1]<-"age.s"
+
+# get the mean of the iteration average 
+temp.df<-data.frame(age.s=1, mean=1, lci=1, uci=1)
+df.fitted.mean.skew.sex.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_skew_gr_sex)){
+  
+  temp.df$age.s<-mean_fitted_skew_gr_sex[each,1]
+  temp.df$mean<-mean(as.numeric(mean_fitted_skew_gr_sex[each,2:4001]))
+  global.ci<-apply(mean_fitted_skew_gr_sex[each,2:4001],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.skew.sex.gr <- rbind(df.fitted.mean.skew.sex.gr, temp.df)
+}
+
+df.fitted.mean.skew.sex.gr$age<-df.fitted.mean.skew.sex.gr$age.s * attributes(skew.gr.df2$age.s)$`scaled:scale` + attributes(skew.gr.df2$age.s)$`scaled:center`
+
+df.fitted.mean.skew.sex.gr$age<-(as.integer(df.fitted.mean.skew.sex.gr$age))
+df.skew.sex.gr.restricted<-df.fitted.mean.skew.sex.gr%>% filter(age>224)
+```
+
+    # Cosine similarity
+
+```{r}
+proto.gr.cos.sex <- conditional_effects(fit.cos.gr.mod, 'age.s', plot=FALSE)
+proto.cos.sex.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.cos.sex))
+
+#  ID lines
+df.pred<- data.frame(age.s = -1.582302, ID= as.character("disn"), troop="PT",cohort= "2013", mumID= as.character("pouit"), troop.nb.s=1,scan.nb.s=1, ndvi.s=1, rank.s=1)
+
+names.of.ind<- unique(cosine.gr.df2$ID)
+
+for(i in 1:length(names.of.ind)){
+  
+  df.sub2<-cosine.gr.df2%>% filter(ID==as.character(names.of.ind[i]))
+  
+  df.temp <- data.frame(age.s=seq(from=min(df.sub2$age.s), to= max(df.sub2$age.s),length.out=100), ID=as.character(names.of.ind[i]),troop = df.sub2[1,"troop"], cohort=df.sub2[1,"cohort"],  mumID= as.character(df.sub2[1,"mumID"]),  troop.nb.s=proto.degree.sex.gr[1,"troop.nb.s"], scan.nb.s =proto.degree.sex.gr[1,"scan.nb.s"], ndvi.s=proto.degree.sex.gr[1,"ndvi.s"], rank.s= proto.degree.sex.gr[1,"rank.s"])
+  
+  df.pred <- rbind(df.pred, df.temp)
+}
+
+df.pred<- df.pred[-1,]
+df.pred$age.s<-round(df.pred$age.s, digits=1)
+df.pred$ID<-as.character(df.pred$ID)
+df.pred$mumID<-as.character(df.pred$mumID)
+
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_ID_cos_gr_sex <- fitted(fit.cos.gr.mod, newdata = df.pred, summary=F, scale=c("response"))
+
+# Back transform
+fitted.cos.gr.sex<- as.data.frame(t(pred_ID_cos_gr_sex))
+pred.df.cos.gr<-cbind(df.pred,fitted.cos.gr.sex) 
+
+mean_fitted_cos_gr_sex<-aggregate(x = pred.df.cos.gr[,c(10:4009)], by = list(pred.df.cos.gr$age.s), FUN = mean)
+colnames(mean_fitted_cos_gr_sex)[1]<-"age.s"
+
+# get the mean of the iteration average 
+temp.df<-data.frame(age.s=1, mean=1, lci=1, uci=1)
+df.fitted.mean.cos.sex.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_cos_gr_sex)){
+  
+  temp.df$age.s<-mean_fitted_cos_gr_sex[each,1]
+  temp.df$mean<-mean(as.numeric(mean_fitted_cos_gr_sex[each,2:4001]))
+  global.ci<-apply(mean_fitted_cos_gr_sex[each,2:4001],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.cos.sex.gr <- rbind(df.fitted.mean.cos.sex.gr, temp.df)
+}
+
+df.fitted.mean.cos.sex.gr$age<-df.fitted.mean.cos.sex.gr$age.s * attributes(cosine.gr.df2$age.s)$`scaled:scale` + attributes(cosine.gr.df2$age.s)$`scaled:center`
+
+df.fitted.mean.cos.sex.gr$age<-(as.integer(df.fitted.mean.cos.sex.gr$age))
+df.cos.sex.gr.restricted <-df.fitted.mean.cos.sex.gr%>%filter(age>224)
+```
+
+# Combine plots
+
+```{r}
+## Degree
+df.degree.sex.gr.restricted.poisson$status<-"J"
+df.degree.sex.juve<-df.degree.sex.gr.restricted.poisson[,c("mean", "lci", "uci","age","status")]
+
+df.ave.degree$status<-"A"
+df.ave.degree$age<-2000
+juve.ad.gr.df<-rbind.fill(df.degree.sex.juve,df.ave.degree)
+
+degree.p<-ggplot(data=juve.ad.gr.df%>%filter(status=="J"), aes(x=age, y=mean))+geom_line()+ geom_ribbon(data=juve.ad.gr.df%>%filter(status=="J"), aes(ymin=lci, ymax=uci),color=NA, alpha=0.5)+theme_classic() +  labs( x = "Age (days)", y = "Degree", tag = "a")+ guides(fill = FALSE) +geom_boxplot( data=juve.ad.gr.df%>%filter(status=="A"),aes(y = mean, x=age),width = 100) +
+  geom_vline(xintercept=1800, linetype='dashed', color='red', size=1) +  theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12)) 
+
+## Strength
+df.str.sex.gr.restricted$status<-"J"
+df.str.sex.juve<-df.str.sex.gr.restricted[,c("mean", "lci", "uci","age","status")]
+
+df.ave.str$status<-"A"
+df.ave.str$age<-2000
+juve.ad.str.df<-rbind.fill(df.str.sex.juve,df.ave.str)
+
+strength.p<-ggplot(data=juve.ad.str.df%>%filter(status=="J"), aes(x=age, y=mean))+geom_line()+ geom_ribbon(data=juve.ad.str.df%>%filter(status=="J"), aes(ymin=lci, ymax=uci),color=NA, alpha=0.5)+theme_classic() +  labs( x = "Age (days)", y = "Strength", tag = "b")+ guides(fill = FALSE) +geom_boxplot( data=juve.ad.str.df%>%filter(status=="A"),aes(y = mean, x=age),width = 100) +
+  geom_vline(xintercept=1800, linetype='dashed', color='red', size=1)+  theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12)) 
+
+## Skewness
+df.skew.sex.gr.restricted$status<-"J"
+df.skew.sex.juve<-df.skew.sex.gr.restricted[,c("mean", "lci", "uci","age","status")]
+
+df.ave.skew$status<-"A"
+df.ave.skew$age<-2000
+juve.ad.skew.df<-rbind.fill(df.skew.sex.juve,df.ave.skew)
+
+skewness.p<-ggplot(data=juve.ad.skew.df%>%filter(status=="J"), aes(x=age, y=mean))+geom_line()+ geom_ribbon(data=juve.ad.skew.df%>%filter(status=="J"), aes(ymin=lci, ymax=uci),color=NA, alpha=0.5)+theme_classic() +  labs( x = "Age (days)", y = "Skewness", tag = "c")+ guides(fill = FALSE) +geom_boxplot( data=juve.ad.skew.df%>%filter(status=="A"),aes(y = mean, x=age),width = 100) + geom_vline(xintercept=1800, linetype='dashed', color='red', size=1)+  theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12))  + scale_y_continuous(labels=c('0','0.5',  '1',  '1.5','2'))
+
+## Cosine similarity
+df.cos.sex.gr.restricted$status<-"J"
+df.cos.sex.juve<-df.cos.sex.gr.restricted[,c("mean", "lci", "uci","age","status")]
+
+df.ave.cos$status<-"A"
+df.ave.cos$age<-2000
+juve.ad.cos.df<-rbind.fill(df.cos.sex.juve,df.ave.cos)
+
+cosine.p<-ggplot(data=juve.ad.cos.df%>%filter(status=="J"), aes(x=age, y=mean))+geom_line()+ geom_ribbon(data=juve.ad.cos.df%>%filter(status=="J"), aes(ymin=lci, ymax=uci),color=NA, alpha=0.5)+theme_classic() +  labs( x = "Age (days)", y = "Cosine Similarity", tag = "d")+ guides(fill = FALSE) +geom_boxplot( data=juve.ad.cos.df%>%filter(status=="A"),aes(y = mean, x=age),width = 100) + geom_vline(xintercept=1800, linetype='dashed', color='red', size=1)+  theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12))  + scale_y_continuous(breaks = c(0.8, 0.85, 0.9),
+    labels = c('0.8', '0.85', '0.9'))
+
+
+combined.ego.gr <-cowplot::plot_grid(degree.p+ theme(legend.position = "none"), strength.p + theme(legend.position = "none"), skewness.p + theme(legend.position = "none"), cosine.p + theme(legend.position = "none"), ncol=2,align = "v")
+
+
+file_path <- "fig.q1.png"
+ggsave(file_path, combined.ego.gr, width = 7, height = 5, dpi = 300)
+
+```
+
+
+## Q2: COMPARISON OF THE GROOMING EGO-NETWORK STRUCTURE BETWEEN PRIMIPAROUS AND MULTIPAROUS FEMALES AROUND BIRTH.
+## AND Q3: COMPARISON OF THE SOCIAL INTEGRATION BETWEEN PRIMIPAROUS AND MULTIPAROUS FEMALES AROUND BIRTH.
+
+/!\ Here the approach to extract data and the data used are the same for Q2 and Q3. As such, to keep it simple, we extracted all measures at once. 
+
+
+# Set up data
+
+```{r}
+primi.status$Troop<-tolower(primi.status$Troop)
+primi.status$Date_birth<-ymd(primi.status$Date_birth)
+
+```
+
+# Extract measures 6 months prior and past birth
+  
+  # Degree, strength, skewness, eigenvector
+
+```{r}
+female.measures.birth <-data.frame(ID= as.character("pouit"),degree=1, strength=1, skewness=1, und_eigen= 2, troop="rst", date= as.Date("2014-09-01"), primiparous=1, post_birth=0, scan.nb=1, year=2014) 
+
+female.measures.birth$date<-as.Date(female.measures.birth$date)
+k<-"rst"
+for (k in unique(all_grooming$TroopID)){
+  
+  ## Select the troop we want 
+  troop.gr<-all_grooming%>% filter(TroopID==k)
+  date.birth<- primi.status %>% filter (Troop==k)
+
+  for (each in 1:nrow(date.birth)){
+    
+    if (date.birth[each, "Year"]=="2018"){
+      
+      windowEnd <-max(troop.gr$Date, na.rm=T) # because our dataset stops prior to the end of the 6 month period past birth
+      
+    }else{
+      
+      windowEnd <-ymd(date.birth[each, "Date_birth"] + as.numeric(months(6), "days"))
+    }
+    
+    windowstart <-ymd(date.birth[each, "Date_birth"]  - as.numeric(months(6), "days"))
+    windowend<-windowstart+windowsize
+    time <- -4
+    while (windowstart + windowsize <= windowEnd){
+      
+      subset.gr <- create.window(troop.gr, windowstart, windowend)
+      scan.nb<- length(unique(subset.gr$Scan))
+      subset.gr <- subset.gr %>% filter(to !=0)
+      
+      if( nrow(subset.gr) >0){
+        
+        edgelist<- create.an.edgeList(subset.gr[,c(1,2)])
+        
+        # subset dataset with the female id of that line
+        female.id <- as.character(date.birth[each, "ID"])
+        subset.id <- edgelist%>% filter(from %in% female.id | to %in% female.id)
+        
+        if(nrow(subset.id)>0){
+          
+          # degree
+          net<- create.a.network(subset.id, directed=F)
+          ind.alldegree<-as.list(igraph::degree(net,mode ="all"))[female.id]
+          id.degree<-as.numeric(ind.alldegree)
+          
+          # strength 
+          ind.allstr <- as.list (igraph::strength(net, mode=c("all")))[female.id]
+          id.str<-as.numeric(ind.allstr)
+          
+          # skewness
+          subset.id$dyads <- ifelse(as.character(subset.id$from) < as.character(subset.id$to), paste(subset.id$from, subset.id$to), paste(subset.id$to, subset.id$from))
+          undirected.edgelist<-subset.id%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight.bis =sum(weight))
+          id.skewness <-skewness(undirected.edgelist$weight.bis)
+          
+          # undirected eigen
+          net.all <- create.a.network(subset.gr, directed=F)
+          und_eigen<-eigen_centrality(net.all, directed= F, weights = E(net.all)$weight)$vector [female.id]
+          
+          # store everythiiiiiing
+          temp.df<- data.frame(ID= female.id, degree=id.degree,strength= id.str, skewness=id.skewness, und_eigen= as.numeric(und_eigen), troop=k, date= windowstart, primiparous=date.birth[each, "Primiparous"], post_birth=time,scan.nb=scan.nb, year=date.birth[each, "Year"])
+          
+          female.measures.birth<-rbind.fill(female.measures.birth, temp.df)
+          
+        } 
+      }
+      windowend = windowend + windowshift
+      windowstart= windowstart+ windowshift
+      time <- time + 1  
+      
+    }
+  }
+}
+
+female.measures.birth <- female.measures.birth%>%filter(ID!="pouit")
+```
+
+  # Cosine similarity
+
+```{r}
+cosine.gr.birth <-  data.frame(ID=as.character("pouit"),cosine=1, date = as.Date("2015-01-01"), troop="RST", primiparous=1, post_birth=1, scan.nb.mean=1, year=1)
+
+for (k in unique(all_grooming$TroopID)){
+  
+  ## Select the troop we want 
+  troop.gr<-all_grooming%>% filter(TroopID==k)
+  date.birth<- primi.status %>% filter (Troop==k)
+  
+  for (each in 1:nrow(date.birth)){
+    
+    if (date.birth[each, "Year"]=="2018"){
+      
+      windowEnd <-max(troop.gr$Date, na.rm=T) # because our dataset stops prior to the end of the 6 month period past birth
+      
+    }else{
+      
+      windowEnd <-ymd(date.birth[each, "Date_birth"] + as.numeric(months(6), "days"))
+    }
+    
+    
+    windowstart <-ymd(date.birth[each, "Date_birth"]) - (as.numeric(months(7), "days")) # to get the first cosine measure on the 6 month mark prior to birth
+    windowend<-windowstart+windowsize
+    
+    edgelist.previous <- data.frame()
+    time <- -5
+    
+    while (windowstart + windowsize <= windowEnd){
+      
+      subset.gr <- create.window(troop.gr, windowstart, windowend)
+      scan.nb<- length(unique(subset.gr$Scan))
+      subset.gr <- subset.gr %>% filter(to !=0)
+      
+      if(nrow(subset.gr)>0){
+        
+        edgelist<- create.an.edgeList(subset.gr[,c(1,2)])
+        
+        if(nrow(edgelist)>0 & nrow(edgelist.previous)>0){
+          
+          # subset dataset with the female id of that line
+          female.id <- as.character(date.birth[each, "ID"])
+          
+          # Cosine extraction
+          current.edgelist<-edgelist%>% filter(from %in% female.id| to %in% female.id)
+          prev.edgelist<- edgelist.previous%>% filter(from %in% female.id| to %in% female.id)
+          
+          current.edgelist$dyads <- ifelse(as.character(current.edgelist$from) < as.character(current.edgelist$to), paste(current.edgelist$from, current.edgelist$to), paste(current.edgelist$to, current.edgelist$from))
+          edgelist.c <-current.edgelist%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight.bis=sum(weight))
+          
+          prev.edgelist$dyads <- ifelse(as.character(prev.edgelist$from) < as.character(prev.edgelist$to), paste(prev.edgelist$from, prev.edgelist$to), paste(prev.edgelist$to, prev.edgelist$from))
+          
+          edgelist.p<-prev.edgelist%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight.bis=sum(weight))
+          edgelists<-merge(edgelist.c,edgelist.p, by=c("dyads"), all=TRUE)
+          edgelists[is.na(edgelists)] <- 0
+          cosine.node<-lsa::cosine((edgelists$weight.bis.x), (edgelists$weight.bis.y))
+          
+          # Store measure
+          temp.df<- data.frame(ID= female.id, cosine= cosine.node, troop=k, date= windowstart, primiparous=date.birth[each, "Primiparous"],post_birth=time, scan.nb.mean =mean(c(scan.nb,scan.nb.prev)), year=date.birth[each, "Year"])
+          
+          cosine.gr.birth<- rbind(cosine.gr.birth,temp.df)
+        }
+      }
+      windowend = windowend + windowshift
+      windowstart = windowstart+ windowshift
+      edgelist.previous<- edgelist
+      scan.nb.prev<- scan.nb
+      time <- time + 1
+    }
+  }
+}
+cosine.gr.birth<- cosine.gr.birth%>% filter(ID !="pouit")
+```
+
+# Attribute NDVI
+
+```{r}
+#merge ndvi with all the df
+cosine.gr.birth2<-merge(cosine.gr.birth,ndvi.df,by=c("date", "troop"), all.x = TRUE )
+female.measures.birth2<-merge(female.measures.birth,ndvi.df,by=c("date", "troop"), all.x = TRUE )
+```
+
+# Attribute variables to dataframes of measures
+
+```{r}
+# extract all the dates where we need to extract troop size. 
+troop.size<- data.frame(troop.nb =1, date=as.Date("2001-12-30"), troop="bla")
+
+for (l in unique(scan.data$troop)){
+  
+  # select the troop from adult
+  troop.data <- scan.data %>% filter(troop==l ) 
+  troop.data<- troop.data [order(ymd(troop.data$Date)),]
+  troop.data<-troop.data[,c(1,2,3)]
+  colnames(troop.data)<-c("from", "to", "Date")
+  
+  
+  troop.df<-female.measures.birth2%>%filter(troop==l)
+  troop.df2<-cosine.gr.birth2%>%filter(troop==l)
+  all.dates<-unique(c(troop.df$date, troop.df2$date))
+  
+  
+  for( each in 1:length(all.dates)) {
+    
+    windowstart<- all.dates[each]
+    windowend<- windowstart+windowsize
+    
+    sub.ind<- create.window(troop.data, windowstart, windowend) 
+    nodes_of_interest_adult <- unique(c(unique(sub.ind$from), unique(sub.ind$to))) # who is alive at that time and will be part of the fully connected bubble.
+    
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="0"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="af"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="am"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf13"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf14"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf15"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf16"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf17"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="inf18"]
+    nodes_of_interest_adult<- nodes_of_interest_adult[nodes_of_interest_adult!="egm"]
+    
+    nodes_of_interest<- unique(nodes_of_interest_adult)
+    
+    #store troop size
+    troop.nb<- length(nodes_of_interest)
+    
+    troop.df<- data.frame(troop.nb=troop.nb, date=windowstart, troop=l )
+    troop.size <-rbind(troop.size,troop.df)
+    
+  }
+}
+
+troop.size<-troop.size[-1,]
+
+# change df to get troop size for each different measure df 
+female.measures.birth3<-merge(female.measures.birth2,troop.size, by =c("date", "troop"), all.x=T)
+cosine.gr.birth3<-merge(cosine.gr.birth2,troop.size, by =c("date", "troop"), all.x=T)
+
+cosine.gr.birth3<-distinct(cosine.gr.birth3)
+female.measures.birth3<-distinct(female.measures.birth3)
+```
+
+## Extract rank of the focal
+
+```{r}
+## Create storing df
+elo.birth.df <- data.frame(elo.r=1,  troop="pouit",  date = as.Date("2015-01-01"),ID="pouit")
+elo.birth.df$date<-as.Date(elo.birth.df$date)
+
+for( j in unique(female.measures.birth3$troop)){
+  
+  troop.df<-female.measures.birth3%>%filter(troop==j)
+  troop.df2<-cosine.gr.birth3%>%filter(troop==j)
+  domi.troop<-dominance.data%>%filter(Troop==j)
+  dates<-unique(c(troop.df$date, troop.df2$date))
+  
+  for (i in unique(dates)){
+    
+    windowstart<- as.Date(i) %m-% months(5)
+    windowend<-windowstart + windowsize
+    
+    df.subset <- create.window(domi.troop[,c(3,4,1,2,5:7)], windowstart, windowend) # subset juveniles
+    
+    if(nrow(df.subset)>1){
+      
+      SEQ <- elo.seq(winner=df.subset$winner, loser=df.subset$loser, Date=df.subset$Date, runcheck=FALSE) # it will infer the ratings
+      
+      ranks.elo<-data.frame(extract_elo(SEQ, max(df.subset$Date), standardize=TRUE) )
+      
+      ranks.elo$troop<-j
+      ranks.elo$date<- windowstart
+      ranks.elo$ID<-rownames(ranks.elo)
+      rownames(ranks.elo) <- NULL
+      colnames(ranks.elo)[1]<-"elo.r"
+      
+      ## Store 
+      elo.birth.df<-rbind(elo.birth.df,ranks.elo)
+    }
+  }
+}
+
+
+elo.birth.df<-elo.birth.df[-1,]
+
+#associate rank to the juvenile ID
+female.measures.birth4<-merge(female.measures.birth3,elo.birth.df, by=c("ID", "date", "troop"), all.x=TRUE)
+colnames(female.measures.birth4)[9]<-"time"
+
+cosine.gr.birth4<-merge(cosine.gr.birth3,elo.birth.df, by=c("ID", "date", "troop"), all.x=TRUE)
+colnames(cosine.gr.birth4)[6]<-"time"
+```
+
+## MODELLING PART
+
+  # Degree
+
+```{r}
+deg.data.birth <- female.measures.birth4 %>% dplyr::select(degree, primiparous, time, elo.r ,ID, NDVI, troop, troop.nb, scan.nb, year) 
+deg.data.birth2 <- deg.data.birth[complete.cases(deg.data.birth),]
+deg.data.birth2<-distinct(deg.data.birth2)
+
+deg.data.birth2$ndvi.s<-scale(deg.data.birth2$NDVI)
+deg.data.birth2$scan.nb.s<-scale(deg.data.birth2$scan.nb)
+deg.data.birth2$troop.nb.s<-scale(deg.data.birth2$troop.nb)
+deg.data.birth2$rank.s<-scale(deg.data.birth2$elo.r)
+deg.data.birth2$time.s <- scale(deg.data.birth2$time)
+deg.data.birth2$primiparous<-as.factor(deg.data.birth2$primiparous)
+deg.data.birth2$year<-as.factor(deg.data.birth2$year)
+deg.data.birth2$troop<-as.factor(deg.data.birth2$troop)
+
+# model structure
+stru_mod <- bf(degree ~  s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+degree_mod_birth <- brm(stru_mod,family= poisson(),iter=2000, data = deg.data.birth2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"),chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(degree_mod_birth)
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(degree_mod_birth, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- deg.data.birth2$degree 
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T) ## slightly  over dispersed
+
+# Trying a negbative binomial
+deg.data.birth2$new_degree<-deg.data.birth2$degree- min(deg.data.birth2$degree)
+
+stru_mod <- bf(new_degree ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+degree_mod_birth2 <- brm(stru_mod,family= negbinomial(),iter=2000, data = deg.data.birth2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4,backend = "cmdstanr",threads = threading(10))
+
+pp_check(degree_mod_birth2)
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(degree_mod_birth2, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- deg.data.birth2$new_degree
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T) # over dispersion remains
+
+## hurdle poisson
+
+bigass_bf <- bf(new_degree ~s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6), hu ~s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+degree_mod_birth3<- brm(bigass_bf, data=deg.data.birth2, family ="hurdle_poisson",iter=2000, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(degree_mod_birth3)
+
+PosteriorPredictions <-predict(degree_mod_birth3, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- deg.data.birth2$new_degree #this df can't have any NAs in it
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T) # over dispersion remains
+# pretty good
+
+## hurdle negbino
+degree_mod_birth4 <- brm(bigass_bf, data=deg.data.birth2, family ="hurdle_negbinomial", iter=2000, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(degree_mod_birth4)
+
+PosteriorPredictions <-predict(degree_mod_birth4, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- deg.data.birth2$new_degree
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T) # over dispersion remains
+
+loo_compare(loo(degree_mod_birth4), loo(degree_mod_birth3),  loo(degree_mod_birth2), loo(degree_mod_birth)) # DAHRMa and pp_checks give similar results. Hurdle families do better according to loo
+
+ppcheck9 <-pp_check(degree_mod_birth4, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_deg_primi_hurdleneg.png", ppcheck9, width = 7, height = 5, dpi = 300)
+
+ppcheck10 <-pp_check(degree_mod_birth, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_deg_primi_poiss.png", ppcheck10, width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(degree_mod_birth4)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary.csv")
+bayes_R2(degree_mod_birth4)
+
+
+```
+
+  # Strength
+
+```{r}
+str.data.gr <- female.measures.birth4 %>% dplyr::select(strength, primiparous, time, elo.r,ID, NDVI, troop, troop.nb, scan.nb, year) 
+str.data.gr2 <- str.data.gr[complete.cases(str.data.gr),]
+str.data.gr2 <-distinct(str.data.gr2 )
+
+str.data.gr2$ndvi.s<-scale(str.data.gr2$NDVI)
+str.data.gr2$scan.nb.s<-scale(str.data.gr2$scan.nb)
+str.data.gr2$troop.nb.s<-scale(str.data.gr2$troop.nb)
+str.data.gr2$rank.s<-scale(str.data.gr2$elo.r)
+str.data.gr2$time.s <- scale(str.data.gr2$time)
+str.data.gr2$primiparous<-as.factor(str.data.gr2$primiparous)
+str.data.gr2$year<-as.factor(str.data.gr2$year)
+str.data.gr2$troop<-as.factor(str.data.gr2$troop)
+
+# model structure
+stru_mod <- bf(strength ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+str_mod_birth <- brm(stru_mod,family= poisson(),iter=2000, data = str.data.gr2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(str_mod_birth)
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(str_mod_birth, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.data.gr2$strength 
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+## slightly  over dispersed
+
+str.data.gr2$new_strength<-str.data.gr2$strength- min(str.data.gr2$strength)
+
+stru_mod <- bf(new_strength ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+str_mod_birth2 <- brm(stru_mod,family= negbinomial(),iter=2000, data = str.data.gr2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4,backend = "cmdstanr",threads = threading(10))
+
+pp_check(str_mod_birth2)
+
+# check for potential dispersion issue
+PosteriorPredictions <-predict(str_mod_birth2, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.data.gr2$new_strength 
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+# under dispersed
+
+## hurdle poisson
+
+bigass_bf <- bf(new_strength ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6), hu ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+str_mod_birth3<- brm(bigass_bf, data=str.data.gr2, family ="hurdle_poisson",iter=2000, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(str_mod_birth3)
+
+PosteriorPredictions <-predict(str_mod_birth3, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.data.gr2$new_strength #this df can't have any NAs in it
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+# pretty good
+
+## hurdle negbino
+str_mod_birth4<- brm(bigass_bf, data=str.data.gr2, family ="hurdle_negbinomial", iter=2000, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(str_mod_birth4)
+
+PosteriorPredictions <-predict(str_mod_birth4, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.data.gr2$new_strength #this df can't have any NAs in it
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+loo_compare(loo(str_mod_birth4), loo(str_mod_birth3),  loo(str_mod_birth2), loo(str_mod_birth)) # based on pp_check, summary, dispersion, and loo => hurdle negbino for the win
+
+ppcheck11 <-pp_check(str_mod_birth4, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_str_primi_hurdleneg.png", ppcheck11, width = 7, height = 5, dpi = 300)
+
+ppcheck12 <-pp_check(str_mod_birth, type="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_str_primi_poiss.png", ppcheck12, width = 7, height = 5, dpi = 300)
+
+
+# Extracting summary of the model
+model_summary <- summary(str_mod_birth4)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(str_mod_birth4)
+
+```
+
+  # Skewness
+
+```{r}
+skew.data.gr <- female.measures.birth4 %>% dplyr::select(skewness, primiparous, time, elo.r,ID, NDVI, troop, troop.nb, scan.nb, year) 
+skew.data.gr2 <- skew.data.gr[complete.cases(skew.data.gr),]
+skew.data.gr2<-distinct(skew.data.gr2)
+
+skew.data.gr2$ndvi.s<-scale(skew.data.gr2$NDVI)
+skew.data.gr2$scan.nb.s<-scale(skew.data.gr2$scan.nb)
+skew.data.gr2$troop.nb.s<-scale(skew.data.gr2$troop.nb)
+skew.data.gr2$rank.s<-scale(skew.data.gr2$elo.r)
+skew.data.gr2$time.s <- scale(skew.data.gr2$time)
+skew.data.gr2$primiparous<-as.factor(skew.data.gr2$primiparous)
+skew.data.gr2$year<-as.factor(skew.data.gr2$year)
+skew.data.gr2$troop<-as.factor(skew.data.gr2$troop)
+
+# model structure
+stru_mod <- bf(skewness~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+skew_mod_birth <- brm(stru_mod,family= skew_normal(),iter=2000, data = skew.data.gr2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck13 <-pp_check(skew_mod_birth)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_skew_primi.png", ppcheck13, width = 7, height = 5, dpi = 300)
+
+
+# Extracting summary of the model
+model_summary <- summary(skew_mod_birth)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(skew_mod_birth)
+
+```
+
+  # Cosine similarity
+
+```{r}
+cos.data.gr <- cosine.gr.birth4 %>% dplyr::select(cosine, primiparous, time, elo.r,ID, NDVI, troop, troop.nb, scan.nb.mean, year) 
+
+cos.data.gr2<-cos.data.gr[complete.cases(cos.data.gr),]
+cos.data.gr2<- distinct(cos.data.gr2)
+cos.data.gr2$ndvi.s<-scale(cos.data.gr2$NDVI)
+cos.data.gr2$scan.nb.s<-scale(cos.data.gr2$scan.nb.mean)
+cos.data.gr2$troop.nb.s<-scale(cos.data.gr2$troop.nb)
+cos.data.gr2$rank.s<-scale(cos.data.gr2$elo.r)
+cos.data.gr2$time.s <- scale(cos.data.gr2$time)
+cos.data.gr2$primiparous<-as.factor(cos.data.gr2$primiparous)
+cos.data.gr2$year<-as.factor(cos.data.gr2$year)
+cos.data.gr2$troop<-as.factor(cos.data.gr2$troop)
+
+# model structure
+stru_mod <- bf(cosine ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+cos_mod_birth <- brm(stru_mod, family= zero_one_inflated_beta(), iter=2000, data = cos.data.gr2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+pp_check(cos_mod_birth)
+
+# pp_checj with the zero one inflated family is not the best, so try with Beta family
+cos_mod_birth2 <- brm(stru_mod, family= Beta(), iter=2000, data = cos.data.gr2%>% filter(cosine!=0 & cosine!=1), control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck14 <-pp_check(cos_mod_birth2)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))+scale_x_continuous(labels =c('0','0.25','0.5','0.75','1'))
+ggsave("ppcheck_cos_primi.png", ppcheck14, width = 7, height = 5, dpi = 300)
+
+
+# Extracting summary of the model
+model_summary <- summary(cos_mod_birth2)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(cos_mod_birth2)
+
+```
+
+
+## PREDICTIONS PRIMIPAROUS/MULTIPAROUS FEMALES
+
+  # Degree : with hurdle negative binomial
+
+```{r}
+proto.gr.degree.sex <- conditional_effects(degree_mod_birth4, 'time.s:primiparous', plot=FALSE)
+proto.deg.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.degree.sex)) # allows us to get the mean for all predictors
+
+names.of.id <-unique(deg.data.birth2$ID)
+
+df.pred.deg <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"),  rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-deg.data.birth2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"] ) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"]) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"]) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+  }
+}
+
+df.pred.deg<- df.pred.deg[-1,]
+df.pred.deg$time.s<-round(df.pred.deg$time.s, digits=1)
+df.pred.deg$ID<-as.character(df.pred.deg$ID)
+df.pred.deg<-df.pred.deg%>%droplevels()
+
+pred_juve_deg <- posterior_epred(degree_mod_birth4, newdata = df.pred.deg, summary=F, scale=c("response"))
+
+fitted.deg.gr <- as.data.frame(t(pred_juve_deg))
+
+# group by time and then get mean per iteration 
+pred.df.deg <- cbind(df.pred.deg,fitted.deg.gr) 
+
+mean_fitted_deg <-aggregate(x = pred.df.deg[,c(10:4009)], 
+                            by = list(pred.df.deg$time.s, pred.df.deg$primiparous), 
+                            FUN = mean) 
+
+colnames(mean_fitted_deg)[1]<-"time.s"
+colnames(mean_fitted_deg)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1,mean=1, lci=1, uci=1) #  
+df.fitted.mean.deg<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_deg)){
+  
+  temp.df$time.s<-mean_fitted_deg[each,1]
+  temp.df$primiparous<-mean_fitted_deg[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_deg[each,3:4002])) + min(deg.data.birth2$degree)
+  global.ci<-apply(mean_fitted_deg[each,3:4002],1,hdi, prob=0.95)+ min(deg.data.birth2$degree)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.deg <- rbind(df.fitted.mean.deg,temp.df)
+}
+
+df.fitted.mean.deg$time<-df.fitted.mean.deg$time.s * attributes(deg.data.birth2$time.s)$`scaled:scale` + attributes(deg.data.birth2$time.s)$`scaled:center`
+
+df.fitted.mean.deg$time<-round(df.fitted.mean.deg$time, digits=1)
+df.fitted.mean.deg$primiparous<-as.factor(df.fitted.mean.deg$primiparous)
+
+degree.plot.hurdle<-ggplot(data=df.fitted.mean.deg, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.deg, aes(ymin=lci, ymax=uci , group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Degree", tag = "") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')
+
+```
+
+  # Degree with Poisson
+
+```{r}
+proto.gr.degree.sex <- conditional_effects(degree_mod_birth, 'time.s:primiparous', plot=FALSE)
+proto.deg.gr<- as.data.frame(do.call(rbind.data.frame, proto.gr.degree.sex)) # allows us to get the mean for all predictors
+
+names.of.id <-unique(deg.data.birth2$ID)
+
+df.pred.deg <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"),  rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-deg.data.birth2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"] ) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"]) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.deg.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.deg.gr[1,"ndvi.s"], scan.nb.s=proto.deg.gr[1,"scan.nb.s"], year=proto.deg.gr[1,"year"]) #
+    
+    df.pred.deg <- rbind(df.pred.deg, df.temp)
+  }
+}
+
+df.pred.deg<- df.pred.deg[-1,]
+df.pred.deg$time.s<-round(df.pred.deg$time.s, digits=1)
+df.pred.deg$ID<-as.character(df.pred.deg$ID)
+df.pred.deg<-df.pred.deg%>%droplevels()
+
+pred_juve_deg <- posterior_epred(degree_mod_birth, newdata = df.pred.deg, summary=F, scale=c("response"))
+
+fitted.deg.gr <- as.data.frame(t(pred_juve_deg))
+
+# group by time and then get mean per iteration 
+pred.df.deg <- cbind(df.pred.deg,fitted.deg.gr) 
+
+mean_fitted_deg <-aggregate(x = pred.df.deg[,c(10:4009)], 
+                            by = list(pred.df.deg$time.s, pred.df.deg$primiparous), 
+                            FUN = mean) 
+
+colnames(mean_fitted_deg)[1]<-"time.s"
+colnames(mean_fitted_deg)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1,mean=1, lci=1, uci=1) #  
+df.fitted.mean.deg<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_deg)){
+  
+  temp.df$time.s<-mean_fitted_deg[each,1]
+  temp.df$primiparous<-mean_fitted_deg[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_deg[each,3:4002]))
+  global.ci<-apply(mean_fitted_deg[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.deg <- rbind(df.fitted.mean.deg,temp.df)
+}
+
+df.fitted.mean.deg$time<-df.fitted.mean.deg$time.s * attributes(deg.data.birth2$time.s)$`scaled:scale` + attributes(deg.data.birth2$time.s)$`scaled:center`
+
+df.fitted.mean.deg$time<-round(df.fitted.mean.deg$time, digits=1)
+df.fitted.mean.deg$primiparous<-as.factor(df.fitted.mean.deg$primiparous)
+
+degree.plot.poisson<-ggplot(data=df.fitted.mean.deg, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.deg, aes(ymin=lci, ymax=uci , group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Degree", tag = "a") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12)) + scale_y_continuous(breaks = c(15, 17.5, 20, 22.5,25),
+    labels = c('15', '17.5', '20', '22.5','25'))
+
+```
+
+  # Strength : hurdle Negbino
+
+```{r}
+proto.cond <- conditional_effects(str_mod_birth4, 'time.s:primiparous', plot=FALSE)
+proto.str.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond)) 
+
+names.of.id <-unique(str.data.gr2$ID)
+
+df.pred.dstr <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-str.data.gr2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"],year=proto.str.gr[1,"year"])
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"], year=proto.str.gr[1,"year"])
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"], year=proto.str.gr[1,"year"])
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+  }
+}
+
+df.pred.dstr<- df.pred.dstr[-1,]
+df.pred.dstr$time.s<-round(df.pred.dstr$time.s, digits=1)
+df.pred.dstr$ID<-as.character(df.pred.dstr$ID)
+df.pred.dstr<-df.pred.dstr%>%droplevels()
+
+pred_juve_str <- posterior_epred(str_mod_birth4, newdata = df.pred.dstr, summary=F, scale=c("response"))
+
+fitted.str.gr <- as.data.frame(t(pred_juve_str))
+
+# group by time and then get mean per iteration 
+pred.df.str <- cbind(df.pred.dstr,fitted.str.gr) 
+
+mean_fitted_str <-aggregate(x = pred.df.str[,c(10:4009)],   # Specify data column
+                            by = list(pred.df.str$time.s, pred.df.str$primiparous),
+                            FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_str)[1]<-"time.s"
+colnames(mean_fitted_str)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.str<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_str)){
+  
+  temp.df$time.s<-mean_fitted_str[each,1]
+  temp.df$primiparous<-mean_fitted_str[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_str[each,3:4002])) +min(str.data.gr2$strength)
+  global.ci<-apply(mean_fitted_str[each,3:4002],1,hdi, prob=0.95)+min(str.data.gr2$strength)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.str <- rbind(df.fitted.mean.str, temp.df)
+}
+
+df.fitted.mean.str$time<-df.fitted.mean.str$time.s * attributes(str.data.gr2$time.s)$`scaled:scale` + attributes(str.data.gr2$time.s)$`scaled:center`
+
+df.fitted.mean.str$time<-round(df.fitted.mean.str$time, digits=1)
+df.fitted.mean.str$primiparous<-as.factor(df.fitted.mean.str$primiparous)
+
+str.plot<-ggplot(data=df.fitted.mean.str, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.str, aes(ymin=lci, ymax=uci, group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Strength", tag = "") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')
+```
+
+  # Strength using the simpler model (Poisson)?
+
+```{r}
+proto.cond <- conditional_effects(str_mod_birth, 'time.s:primiparous', plot=FALSE)
+proto.str.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond))
+
+names.of.id <-unique(str.data.gr2$ID)
+
+df.pred.dstr <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-str.data.gr2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"], year=proto.str.gr[1,"year"] )
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"], year=proto.str.gr[1,"year"])
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.str.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.str.gr[1,"ndvi.s"], scan.nb.s=proto.str.gr[1,"scan.nb.s"], year=proto.str.gr[1,"year"])
+    
+    df.pred.dstr <- rbind(df.pred.dstr, df.temp)
+  }
+}
+
+df.pred.dstr<- df.pred.dstr[-1,]
+df.pred.dstr$time.s<-round(df.pred.dstr$time.s, digits=1)
+df.pred.dstr$ID<-as.character(df.pred.dstr$ID)
+df.pred.dstr<-df.pred.dstr%>%droplevels()
+
+pred_juve_str <- posterior_epred(str_mod_birth, newdata = df.pred.dstr, summary=F, scale=c("response"))
+
+fitted.str.gr <- as.data.frame(t(pred_juve_str))
+
+# group by time and then get mean per iteration 
+pred.df.str <- cbind(df.pred.dstr,fitted.str.gr) 
+
+mean_fitted_str <-aggregate(x = pred.df.str[,c(10:4009)],   # Specify data column
+                            by = list(pred.df.str$time.s, pred.df.str$primiparous),
+                            FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_str)[1]<-"time.s"
+colnames(mean_fitted_str)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.str<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_str)){
+  
+  temp.df$time.s<-mean_fitted_str[each,1]
+  temp.df$primiparous<-mean_fitted_str[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_str[each,3:4002])) 
+  global.ci<-apply(mean_fitted_str[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.str <- rbind(df.fitted.mean.str, temp.df)
+}
+
+df.fitted.mean.str$time<-df.fitted.mean.str$time.s * attributes(str.data.gr2$time.s)$`scaled:scale` + attributes(str.data.gr2$time.s)$`scaled:center`
+
+df.fitted.mean.str$time<-round(df.fitted.mean.str$time, digits=1)
+df.fitted.mean.str$primiparous<-as.factor(df.fitted.mean.str$primiparous)
+
+str.plot.poisson<-ggplot(data=df.fitted.mean.str, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.str, aes(ymin=lci, ymax=uci, group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Strength", tag = "b") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12))  + scale_y_continuous(breaks = c(30, 40, 50, 60,70),
+    labels = c('30', '40', '50', '60','70'))
+```
+
+  # Skewness
+
+```{r}
+proto.cond <- conditional_effects(skew_mod_birth, 'time.s:primiparous', plot=FALSE)
+proto.sk.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond)) 
+
+names.of.id <-unique(skew.data.gr2$ID)
+
+df.pred.skw <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-skew.data.gr2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.sk.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.sk.gr[1,"ndvi.s"], scan.nb.s=proto.sk.gr[1,"scan.nb.s"], year=proto.sk.gr[1,"year"] )
+    
+    df.pred.skw <- rbind(df.pred.skw, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.sk.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.sk.gr[1,"ndvi.s"], scan.nb.s=proto.sk.gr[1,"scan.nb.s"], year=proto.sk.gr[1,"year"])
+    
+    df.pred.skw <- rbind(df.pred.skw, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.sk.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.sk.gr[1,"ndvi.s"], scan.nb.s=proto.sk.gr[1,"scan.nb.s"], year=proto.sk.gr[1,"year"])
+    
+    df.pred.skw <- rbind(df.pred.skw, df.temp)
+  }
+}
+
+df.pred.skw<- df.pred.skw[-1,]
+df.pred.skw$time.s<-round(df.pred.skw$time.s, digits=1)
+df.pred.skw$ID<-as.character(df.pred.skw$ID)
+df.pred.skw<-df.pred.skw%>%droplevels()
+
+pred_juve_sk <- posterior_epred(skew_mod_birth, newdata = df.pred.skw, summary=F, scale=c("response"))
+
+fitted.sk.gr <- as.data.frame(t(pred_juve_sk))
+
+# group by time and then get mean per iteration 
+pred.df.sk <- cbind(df.pred.skw,fitted.sk.gr) 
+
+mean_fitted_sk <-aggregate(x = pred.df.sk[,c(10:4009)],   # Specify data column
+                           by = list(pred.df.sk$time.s, pred.df.sk$primiparous),
+                           FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_sk)[1]<-"time.s"
+colnames(mean_fitted_sk)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.sk<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_sk)){
+  
+  temp.df$time.s<-mean_fitted_sk[each,1]
+  temp.df$primiparous<-mean_fitted_sk[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_sk[each,3:4002]))
+  global.ci<-apply(mean_fitted_sk[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.sk <- rbind(df.fitted.mean.sk, temp.df)
+}
+
+df.fitted.mean.sk$time<-df.fitted.mean.sk$time.s * attributes(skew.data.gr2$time.s)$`scaled:scale` + attributes(skew.data.gr2$time.s)$`scaled:center`
+
+df.fitted.mean.sk$time<-round(df.fitted.mean.sk$time, digits=1)
+df.fitted.mean.sk$primiparous<-as.factor(df.fitted.mean.sk$primiparous)
+
+skew.plot<-ggplot(data=df.fitted.mean.sk, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.sk, aes(ymin=lci, ymax=uci, group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Skewness", tag = "c") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12))  + scale_y_continuous(breaks = c(1.5, 1.75, 2, 2.25),
+    labels = c('1.5', '1.75', '2', '2.25'))
+```
+
+  # Cosine similarity
+
+```{r}
+proto.cond <- conditional_effects(cos_mod_birth2, 'time.s:primiparous', plot=FALSE)
+proto.cos.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond))
+
+names.of.id <-unique(cos.data.gr2$ID)
+
+df.pred.cos <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-cos.data.gr2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.cos.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.cos.gr[1,"ndvi.s"], scan.nb.s=proto.cos.gr[1,"scan.nb.s"], year=proto.cos.gr[1,"year"] )
+    
+    df.pred.cos <- rbind(df.pred.cos, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.cos.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.cos.gr[1,"ndvi.s"], scan.nb.s=proto.cos.gr[1,"scan.nb.s"], year=proto.cos.gr[1,"year"])
+    
+    df.pred.cos <- rbind(df.pred.cos, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.cos.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.cos.gr[1,"ndvi.s"], scan.nb.s=proto.cos.gr[1,"scan.nb.s"], year=proto.cos.gr[1,"year"])
+    
+    df.pred.cos <- rbind(df.pred.cos, df.temp)
+  }
+}
+
+df.pred.cos<- df.pred.cos[-1,]
+df.pred.cos$time.s<-round(df.pred.cos$time.s, digits=1)
+df.pred.cos$ID<-as.character(df.pred.cos$ID)
+df.pred.cos<-df.pred.cos%>%droplevels()
+
+pred_juve_cos <- posterior_epred(cos_mod_birth2, newdata = df.pred.cos, summary=F, scale=c("response"))
+
+fitted.cos.gr <- as.data.frame(t(pred_juve_cos))
+
+# group by time and then get mean per iteration 
+pred.df.cos <- cbind(df.pred.cos,fitted.cos.gr) 
+
+mean_fitted_cos <-aggregate(x = pred.df.cos[,c(10:4009)],   # Specify data column
+                            by = list(pred.df.cos$time.s, pred.df.cos$primiparous),
+                            FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_cos)[1]<-"time.s"
+colnames(mean_fitted_cos)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1, primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.cos<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_cos)){
+  
+  temp.df$time.s<-mean_fitted_cos[each,1]
+  temp.df$primiparous<-mean_fitted_cos[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_cos[each,3:4002]))
+  global.ci<-apply(mean_fitted_cos[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.cos <- rbind(df.fitted.mean.cos, temp.df)
+}
+
+df.fitted.mean.cos$time<-df.fitted.mean.cos$time.s * attributes(cos.data.gr2$time.s)$`scaled:scale` + attributes(cos.data.gr2$time.s)$`scaled:center`
+
+df.fitted.mean.cos$time<-round(df.fitted.mean.cos$time, digits=1)
+df.fitted.mean.cos$primiparous<-as.factor(df.fitted.mean.cos$primiparous)
+
+cos.plot<-ggplot(data=df.fitted.mean.cos, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.cos, aes(ymin=lci, ymax=uci, group=primiparous, fill=primiparous), alpha=0.1)+theme_classic()+ scale_color_manual(values=c('red', 'blue')) + labs( x = "Months around birthing event", y = "Cosine similarity", tag = "d") + scale_fill_manual(values=c('red', 'blue'))+ guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=14))+ geom_vline(xintercept =0.0, linetype='dashed')+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        legend.position = "none",
+        legend.text=element_text(size=12)) + scale_y_continuous(breaks = c(0.81, 0.84, 0.87, 0.9),
+    labels = c('0.81', '0.84', '0.87', '0.9'))
+```
+
+# Combine plot
+
+```{r}
+fig.q2<-cowplot::plot_grid(degree.plot.poisson,str.plot.poisson,skew.plot,cos.plot, ncol=2,align = "v")
+
+file_path <- "fig.q2.png"
+ggsave(file_path, fig.q2, width = 7, height = 5, dpi = 300)
+```
+
+## Q3: SOCIAL INTEGRATION AROUND BIRTH EVENT (undirected eigenvector centrality)
+
+# Modelling part 
+
+```{r}
+#remove NAs
+eigen.data.gr <- female.measures.birth4 %>% dplyr::select(und_eigen, primiparous, time, elo.r, ID, NDVI, troop, troop.nb, scan.nb, year) 
+
+eigen.data.gr2<-eigen.data.gr[complete.cases(eigen.data.gr),]
+eigen.data.gr2<-distinct(eigen.data.gr2)
+
+eigen.data.gr2$ndvi.s<-scale(eigen.data.gr2$NDVI)
+eigen.data.gr2$scan.nb.s<-scale(eigen.data.gr2$scan.nb)
+eigen.data.gr2$troop.nb.s<-scale(eigen.data.gr2$troop.nb)
+eigen.data.gr2$rank.s<-scale(eigen.data.gr2$elo.r)
+eigen.data.gr2$time.s <- scale(eigen.data.gr2$time)
+eigen.data.gr2$primiparous<-as.factor(eigen.data.gr2$primiparous)
+eigen.data.gr2$year<-as.factor(eigen.data.gr2$year)
+eigen.data.gr2$troop<-as.factor(eigen.data.gr2$troop)
+
+# model structure
+stru_mod <- bf(und_eigen~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+undeigen_mod_birth <- brm(stru_mod, family= zero_one_inflated_beta(), iter=2000, data = eigen.data.gr2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr",threads = threading(10))
+
+ppcheck15 <-pp_check(undeigen_mod_birth)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))+scale_x_continuous(labels =c('0','0.25','0.5','0.75','1'))+scale_y_continuous(labels =c('0','0.5','0.75','1','1.25'))
+ggsave("ppcheck_eigen_primi.png", ppcheck15, width = 7, height = 5, dpi = 300)
+
+
+# Extracting summary of the model
+model_summary <- summary(undeigen_mod_birth)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(undeigen_mod_birth)
+
+```
+
+# Predictions
+
+```{r}
+proto.cond <- conditional_effects(undeigen_mod_birth, 'time.s:primiparous', plot=FALSE)
+proto.data.e.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond)) # allows us to get the mean for all predictors
+
+names.of.id <-unique(eigen.data.gr2$ID)
+
+df.pred.e.gr <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=36, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-eigen.data.gr2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.data.e.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.e.gr[1,"ndvi.s"], scan.nb.s=proto.data.e.gr[1,"scan.nb.s"], year=proto.data.e.gr[1,"year"])
+    
+    df.pred.e.gr <- rbind(df.pred.e.gr, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.data.e.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.e.gr[1,"ndvi.s"], scan.nb.s=proto.data.e.gr[1,"scan.nb.s"], year=proto.data.e.gr[1,"year"])
+    
+    df.pred.e.gr <- rbind(df.pred.e.gr, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.data.e.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s= proto.data.e.gr[1,"ndvi.s"], scan.nb.s=proto.data.e.gr[1,"scan.nb.s"], year= proto.data.e.gr[1,"year"])
+    
+    df.pred.e.gr <- rbind(df.pred.e.gr, df.temp)
+  }
+}
+
+df.pred.e.gr<- df.pred.e.gr[-1,]
+df.pred.e.gr$time.s<-round(df.pred.e.gr$time.s, digits=1)
+df.pred.e.gr$ID<-as.character(df.pred.e.gr$ID)
+df.pred.e.gr<-df.pred.e.gr%>%droplevels()
+
+pred_ind_e_gr <- posterior_epred(undeigen_mod_birth, newdata = df.pred.e.gr, summary=F, scale=c("response"))
+
+fitted.e.gr <- as.data.frame(t(pred_ind_e_gr))
+
+# group by time and then get mean per iteration 
+pred.df.e.gr <-cbind(df.pred.e.gr,fitted.e.gr) 
+
+mean_fitted_e_gr <-aggregate(x = pred.df.e.gr[,c(10:4009)],   # Specify data column
+                             by = list(pred.df.e.gr$time.s, pred.df.e.gr$primiparous),
+                             FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_e_gr)[1]<-"time.s"
+colnames(mean_fitted_e_gr)[2]<-"primiparous"
+
+# get the global mean per row
+temp.df<-data.frame(time.s=1,primiparous=1,mean=1,lci=1,uci=1)
+df.fitted.mean.unde.gr <-data.frame()
+
+for ( each in 1:nrow(mean_fitted_e_gr)){
+  
+  temp.df$time.s<-mean_fitted_e_gr[each,1]
+  temp.df$primiparous<-mean_fitted_e_gr[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_e_gr[each,3:4002]))
+  global.ci<-apply(mean_fitted_e_gr[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.unde.gr <- rbind(df.fitted.mean.unde.gr, temp.df)
+}
+
+df.fitted.mean.unde.gr$time<-df.fitted.mean.unde.gr$time.s * attributes(eigen.data.gr2$time.s)$`scaled:scale` + attributes(eigen.data.gr2$time.s)$`scaled:center`
+
+df.fitted.mean.unde.gr$time<-round(df.fitted.mean.unde.gr$time, digits=1)
+df.fitted.mean.unde.gr$primiparous<-as.factor(df.fitted.mean.unde.gr$primiparous)
+
+gr.unde<-ggplot(data=df.fitted.mean.unde.gr, aes(x=time, y=mean, group=primiparous, color=primiparous))+geom_line() + geom_ribbon(data=df.fitted.mean.unde.gr, aes(ymin=lci, ymax=uci, group=primiparous, fill=primiparous), alpha=0.1)+theme_classic() +labs( x = "Months around birthing event", y = "Eigenvector centrality", tag = "")  + scale_color_manual(labels = c("Multiparous", "Primiparous"), values = c("red", "blue"))+ guides(fill = FALSE) + theme(legend.position = "none", axis.text.x=element_text(size=11),axis.text.y=element_text(size=11),axis.title=element_text(size=13)) + geom_vline(xintercept =0.0, linetype='dashed') + theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        axis.title.x=element_text(size=15),
+        axis.title.y=element_text(size=15),
+        legend.position = "none",
+        legend.text=element_text(size=12)) + scale_y_continuous(
+    labels = c('0.4', '0.5', '0.6', '0.7','0.8'))
+
+file_path <- "fig.q3.png"
+ggsave(file_path, gr.unde, width = 6, height = 4, dpi = 300)
+
+```
+
+
+## Q4 : SOCIAL RELATIONSHIP RESTRUCTURATION BEHIND SOCIAL INTEGRATION AROUND BIRTH EVENT
+
+# Load function to classify strong/weak ties
+
+```{r}
+build_stan_model <- function(formula,df_weights, family){
+  
+  #for normal and skew normal add priors
+  if(family=="normal" ) {
+    
+    #use brm to create the stan code and data for the model
+    scode <- make_stancode(formula, df_weights, family = family , prior =c(prior ('normal(1,1)', class='Intercept',lb = 0), prior('normal(0,1)', class='sigma')))
+    
+  } else if (family == "skew_normal") {
+    
+    my_priors<-get_prior( bf(weights~1 ) , data=data.frame(weights=(weights)), family = "skew_normal" )
+    
+    #use brm to create the stan code and data for the model
+    scode <- make_stancode(formula, df_weights, family = family, prior =my_priors ) 
+    
+  } else if (family == "poisson") {
+    
+    if(formula =='weights ~ 1 + label'){
+      
+      df_weights$label<-as.factor(df_weights$label)
+      
+      my_priors<-get_prior( bf(weights~ 1+ label ), data=df_weights, family = "poisson")
+      
+      my_priors[1,1] <- "normal(0,1)"
+      
+      #use brm to create the stan code and data for the model
+      scode <- make_stancode(formula, df_weights, family = family, prior= my_priors) # 
+      
+    }else{
+      
+      #get default priors from brms
+      my_priors<-get_prior( bf(weights~1 ) , data=df_weights, family = "poisson" )
+      
+      #use brm to create the stan code and data for the model
+      scode <- make_stancode(formula, df_weights, family = family, prior= my_priors) #
+      
+    }
+    
+  } else {
+    
+    print('unsupported model family used')
+  }
+  
+  #create the stan model
+  model <- stan_model(model_code=scode)
+  
+  return(model)
+}
+
+model_based_strong_ties_fast <- function(weights, sd_diff = 0 , min_diff=2 , model_backend="rstan", normal_model_base, skewnormal_model_base, poisson_model_base, poisson_model_label){
+  
+  #sort weights
+  weights <- sort(weights)
+  
+  #store outputs
+  df_models <- data.frame()
+  
+  #start off (model has to beat this)
+  max_density = -999999
+  
+  #### Step 1: check for evidence of skewness
+  
+  #fit a model with a normal distribution
+  fit.normal <- fit_stan_model(normal_model_base,'weights ~ 1', data.frame(weights=weights), family="normal")
+  #fit a model with a skew normal distribution
+  fit.skew <- fit_stan_model (skewnormal_model_base,'weights ~ 1', data.frame(weights=weights), family=skew_normal())
+  
+  #compare models using leave-one-out cross validation
+  loo_res<- suppressWarnings(loo::loo_compare(loo(fit.skew),loo(fit.normal) ) )
+  
+  #### Step 2: If there is skewness, try to classify which weights are outside expectation using the normal distribution
+  
+  #check to see if there is sufficient evidence for 'skew': if the (top model is the skew model) & (lower bound of the difference between models if greater than 0) & (the min difference is above a threshold: min_diff) then there is evidence of a skew
+  if(rownames(loo_res)[1]=="fit.skew" & (loo_res[2,1] + sd_diff*loo_res[2,2] < 0 ) & (loo_res[2,1]<=(-min_diff))  ){  #   min_diff makes it more conservative...
+    
+    #loop through the data and try assigning different strong tie options (#start with largest weight, assign it as a strong tie, then move on and assign the first two weights as strong ties, ... etc)
+    for (s in 0:round(length(weights)/2) ){ #only look at the highest half of the weights
+      
+      #for the first model no weights are given strong tie status
+      if(s==0){
+        
+        #all weights are not strong ties
+        weight_labels <- rep(0,length(weights))
+        
+        #fit a normal distribution
+        fit.skew2 <- fit_stan_model(poisson_model_base,'weights ~ 1', data.frame(weights=weights), family='poisson')
+        
+        loo_labels = suppressWarnings(loo(fit.skew2))
+        
+        #for all other models assign weights as either strong ties or not
+      } else {
+        
+        
+        #what weights to set as strong ties
+        l=length(weights)-s #top weight
+        
+        weight_labels<-c(rep(0,l),seq(1,s,by=1) )
+        
+        #fit a skewed normal
+        fit.skew2 <- fit_stan_model(poisson_model_label,'weights ~ 1 + label', data.frame(weights=weights,label=as.factor(weight_labels) ), family='poisson')
+        
+        loo_labels = suppressWarnings(loo(fit.skew2))
+        
+      }
+      
+      #extract the loo
+      loo_labels = suppressWarnings(loo(fit.skew2))
+      
+      #if the model beats the last model save it as the best
+      if(loo_labels$estimates[1,1]>max_density& loo_labels$estimates[1,1]-max_density > min_diff ){ 
+        fit_save = fit.skew2
+        label_save = weight_labels
+        max_density=loo_labels$estimates[1,1]
+        
+        #save all the results
+        df_models <-  dplyr::bind_rows(df_models, data.frame(strongTies = s, elpd = loo_labels$estimates[1,1], looic = loo_labels$estimates[3,1]))
+        
+        #if the model is not better stop the procedure  
+      } else {
+        df_models <-  dplyr::bind_rows(df_models, data.frame(strongTies = s, elpd = loo_labels$estimates[1,1], looic = loo_labels$estimates[3,1]))
+        break
+      }
+    }
+    
+    return( data.frame(weight=weights, strong = as.numeric(label_save>0) ))
+    
+  } else {
+    
+    return(data.frame(weight=weights, strong = rep(0, length(weights)) ))
+    
+  }
+}
+
+#fit the base model to data
+fit_stan_model <- function(model, formula, df_weights, family){
+  
+  #get the data into rstan format
+  sdata <- make_standata(formula, df_weights )
+  
+  #fit the model to the data
+  stanfit <- suppressWarnings(rstan::sampling(object = model, data = sdata, refresh = 0, chains=1))
+  
+  # feed the Stan model back into a brms model
+  
+  fit <- brm(formula, df_weights, empty = TRUE, family = family)
+  fit$fit <- stanfit
+  fit <- rename_pars(fit)
+  
+  return(fit)
+}
+
+## Build models.
+#choose some weights to test the model on:
+weights <- c(2,1,0,4,2,2,2,1,1,3,8) #can be anything, just need the variable names
+
+#add arbitrary labels (this is used just to build the model)
+weight_labels <- as.factor(rep(c(0,1),length(weights))) 
+
+#build and compile all base models (this saves time when running the models!)
+normal_model_base <- build_stan_model('weights ~ 1', data.frame(weights=weights),"normal")
+skewnormal_model_base <- build_stan_model('weights ~ 1', data.frame(weights=weights), "skew_normal")
+poisson_model_base <- build_stan_model('weights ~ 1', data.frame(weights=weights), "poisson")
+poisson_model_label <- build_stan_model('weights ~ 1 + label', data.frame(weights=weights, label=weight_labels), "poisson")
+```
+
+# Extract strong ties for primiparous and multiparous females across the birth event.
+
+```{r}
+s.w.ties.loop<-data.frame(weight=1, strong=1, ID= "pouit", date = as.Date("2015-01-01"), troop="RST", primiparous="bla", time=1, row_nb=1, scan.nb=1, year=1, dyads="pouit")
+s.w.ties.loop$date<-as.Date(s.w.ties.loop$date)
+
+for (k in unique(all_grooming$TroopID)){
+  
+  ## Select the troop we want 
+  troop.gr<-all_grooming%>% filter(TroopID==k)
+  date.birth<- primi.status %>% filter (Troop==k)
+  
+  for (each in 1:nrow(date.birth)){
+    
+    if (date.birth[each, "Year"]=="2018"){
+      
+      windowEnd <-max(troop.gr$Date, na.rm=T) # because our dataset stops prior to the end of the 6 month period past birth
+      
+    }else{
+      
+      windowEnd <-ymd(date.birth[each, "Date_birth"] + as.numeric(months(6), "days"))
+    }
+    
+    windowstart <-ymd(date.birth[each, "Date_birth"]  - as.numeric(months(6), "days"))
+    windowend<-windowstart+windowsize
+    time <- -4
+    
+    while (windowstart + windowsize <= windowEnd){
+      
+      subset.gr <- create.window(troop.gr, windowstart, windowend)
+      scan.nb<- length(unique(subset.gr$Scan))
+      subset.gr <- subset.gr %>% filter(to !=0)
+      if(nrow(subset.gr)>0){
+        edgelist<- create.an.edgeList(subset.gr[,c(1,2)])
+        
+        # subset dataset with the female id of that line
+        female.id <- as.character(date.birth[each, "ID"])
+        subset.id <- edgelist%>% filter(from %in% female.id | to %in% female.id)
+        
+        if(nrow(subset.id)>=2){
+          
+          subset.id$dyads <- ifelse(as.character(subset.id$from) < as.character(subset.id$to), paste(subset.id$from, subset.id$to), paste(subset.id$to, subset.id$from))
+          
+          non.dire.edgelist<-subset.id%>% dplyr::group_by(dyads)%>% dplyr::summarise(weight=sum(weight))
+          
+          if (nrow(non.dire.edgelist)>1 && sd(non.dire.edgelist$weight)!=0){
+            
+            if(nrow(subset.id)>10){
+              
+              strong.ties <- model_based_strong_ties_fast(non.dire.edgelist$weight, sd_diff = 0 , min_diff=3 , model_backend="rstan", normal_model_base, skewnormal_model_base, poisson_model_base, poisson_model_label)
+              
+            }else{
+              
+              strong.ties <- model_based_strong_ties_fast(non.dire.edgelist$weight, sd_diff = 0 , min_diff=1, model_backend="rstan", normal_model_base, skewnormal_model_base, poisson_model_base, poisson_model_label)
+            } 
+            
+            # Store measure
+            strong.ties$ID<- female.id
+            strong.ties$date<- windowstart
+            strong.ties$troop<- k
+            strong.ties$primiparous<- date.birth[each, "Primiparous"]
+            strong.ties$time<-time
+            strong.ties$row_nb<-each
+            strong.ties$scan.nb<-scan.nb
+            strong.ties$year<-date.birth[each, "Year"]
+            
+            non.dire.edgelist<-non.dire.edgelist[order(non.dire.edgelist$weight), ]
+            strong.ties <-cbind(strong.ties,non.dire.edgelist)
+            strong.ties<-strong.ties[,c(1:11)]
+            s.w.ties.loop<- rbind(s.w.ties.loop,strong.ties)
+            
+            gc()
+            
+          }else{
+            
+            strong.ties <-  data.frame(weight=non.dire.edgelist$weight, strong=0)
+            strong.ties$ID<- female.id
+            strong.ties$date<- windowstart
+            strong.ties$troop<- k
+            strong.ties$primiparous<- date.birth[each, "Primiparous"]
+            strong.ties$time<-time
+            strong.ties$row_nb<-each
+            strong.ties$scan.nb<-scan.nb
+            strong.ties$year<-date.birth[each, "Year"]
+            
+            non.dire.edgelist<-non.dire.edgelist[order(non.dire.edgelist$weight), ]
+            strong.ties <-cbind(strong.ties,non.dire.edgelist)
+            strong.ties<-strong.ties[,c(1:11)]
+            s.w.ties.loop<- rbind(s.w.ties.loop,strong.ties)
+            gc()
+          }
+          
+        } else{
+          
+          if (nrow(subset.id)>0){
+            
+            strong.ties <-  data.frame(weight= subset.id$weight, strong=0)
+            strong.ties$ID<- female.id
+            strong.ties$date<- windowstart
+            strong.ties$troop<- k
+            strong.ties$primiparous<- date.birth[each, "Primiparous"]
+            strong.ties$time<-time
+            strong.ties$row_nb<-each
+            strong.ties$scan.nb<-scan.nb
+            strong.ties$year<-date.birth[each, "Year"]
+            
+            non.dire.edgelist<-non.dire.edgelist[order(non.dire.edgelist$weight), ]
+            strong.ties <-cbind(strong.ties,non.dire.edgelist)
+            strong.ties<-strong.ties[,c(1:11)]
+            s.w.ties.loop<- rbind(s.w.ties.loop,strong.ties)
+            gc()
+          }
+        }
+      }
+      saveRDS(s.w.ties.loop, file = "s.w.ties.loop.Rds")  
+      windowend = windowend + windowshift
+      windowstart= windowstart+ windowshift
+      time <- time + 1   
+      
+    }
+  }
+}
+
+s.w.ties.loop2<-s.w.ties.loop %>% filter(ID!= "pouit")
+```
+
+# Set up file
+
+```{r}
+# deal with the dyad column where ID1 is the focal and ID2 is the partner/tie
+s.w.ties.loop2[c('ID1', 'ID2')] <- stringr::str_split_fixed(s.w.ties.loop2$dyads, ' ', 2)
+
+for (i in 1:nrow(s.w.ties.loop2)){
+  
+  if (s.w.ties.loop2[i,"ID1"]==s.w.ties.loop2[i,"ID"] ){
+    
+    s.w.ties.loop2[i,"tie"]<- s.w.ties.loop2[i,"ID2"]
+    
+  }else{
+    
+    s.w.ties.loop2[i,"tie"]<- s.w.ties.loop2[i,"ID1"]
+  }
+}
+
+strg.weak.ties.gr<-s.w.ties.loop2 %>% select(-("dyads"),-("ID1"),-("ID2"))
+strg.weak.ties.gr<-distinct(strg.weak.ties.gr)
+
+strg.weak.ties.gr<- strg.weak.ties.gr%>% filter(ID!="lisainf14" & ID!="puzzinf16" & ID!="macy" & ID!="needinf16",ID!="cyclinf15" & ID!="cyclinf16" & ID!="doriinf16" & ID!="dottinf16",ID!="ellainf16" & ID!="fayinf15" & ID!="floinf15" & ID!="ginginf16",ID!="hollinf16" & ID!="jasminf15" & ID!="jasminf16" & ID!="laurinf15",ID!="laurinf16" & ID!="layainf15" & ID!="lucyinf15",ID!="lucyinf16" & ID!="phoeinf16" & ID!="saffinf16" & ID!="shuminf15",ID!="valkinf16" & ID!="ubuninf16" & ID!="tearinf16",ID!="cura" & ID!="port" & ID!="swaz")
+
+# Set up the dataframe
+strg.weak.ties.gr2<-data.frame()
+
+for(each in unique(strg.weak.ties.gr$row_nb)){
+  
+  subset.df <- strg.weak.ties.gr%>%filter(row_nb==each)
+  
+  for(i in unique(subset.df$ID)){
+    
+    subset.id <- subset.df%>%filter(ID==i)
+    subset.id$year <- year(min(subset.id$date))
+    id.file<- primi.status%>%filter(Year ==year(min(subset.id$date))& ID==i)
+    subset.id$primiparous<- id.file[1,"primiparous"]
+    strg.weak.ties.gr2<-rbind(strg.weak.ties.gr2, subset.id)
+  }
+}
+
+```
+
+# Add primiparous status
+
+```{r}
+strg.weak.ties.gr3<-merge(strg.weak.ties.gr2, id.traits, by="ID", all.x=T)
+
+colnames(primi.status)<-c("ID","Date_birth", "troop", "primiparous", "year", "Adult")
+
+strg.weak.ties.gr4<-merge(strg.weak.ties.gr3, primi.status, by=c("ID","year", "troop"), all.x=T)
+strg.weak.ties.gr4<-distinct(strg.weak.ties.gr4)
+```
+
+# Extract degree across birth event
+
+```{r}
+# set up storage
+w.str.data <-data.frame(ID= as.character("pouit"), degree_s=2, degree_w=1, troop="rst", date= as.Date("2014-09-01"), primiparous=1, time=0, row_nb=1, year=2013, scan.nb=1) #
+w.str.data$date<-as.Date(w.str.data$date)
+
+for (each in unique(strg.weak.ties.gr4$ID)){
+  
+  subset.id <- strg.weak.ties.gr4%>% filter(ID == each)
+  
+  for (i in unique(subset.id$row_nb)){
+    
+    sub.id.row <- subset.id %>% filter(row_nb == i)
+    
+    for (j in unique (sub.id.row$time)){
+      
+      sub.id.time <- sub.id.row%>% filter(time==j)
+      str.tie <-sub.id.time%>% filter(strong==1)
+      w.tie<-sub.id.time%>% filter(strong==0)
+      
+      # extract strong and weak tie degrees
+      bub.size<- nrow(str.tie)
+      w.size<-nrow(w.tie)
+      
+      # store everythiiiiiing
+      temp.df<- data.frame(ID= each, degree_s=bub.size, degree_w= w.size, troop=sub.id.time[1,"troop"], date= sub.id.time[1,"date"], primiparous=sub.id.time[1, "primiparous"], time=j, row_nb=i, year=sub.id.time[1,"year"], scan.nb=sub.id.time[1,"scan.nb"]) #
+      
+      w.str.data<-rbind.fill(w.str.data, temp.df)
+      
+      
+    }
+  } 
+}
+
+w.str.data<-w.str.data%>%filter(ID!="pouit")
+```
+
+# Add rank from Q2/Q3
+
+```{r}
+w.str.data2<-merge(w.str.data,elo.birth.df, by=c("ID", "date", "troop"), all.x=TRUE)
+```
+
+# Add NDVI 
+
+```{r}
+w.str.data3<-merge(w.str.data2,ndvi.df,by=c("date", "troop"), all.x = TRUE)
+```
+
+# Add troop size from Q2/Q3
+
+```{r}
+w.str.data4<-merge(w.str.data3,troop.size, by =c("date", "troop"), all.x=T)
+```
+
+## MODELLING PRIMI/MULTIPAROUS FEMALES
+
+  # Strong ties
+
+```{r}
+str.tie.primi <- w.str.data4 %>% dplyr::select(degree_s, primiparous, time, elo.r, ID, NDVI, troop, troop.nb, year,scan.nb) 
+str.tie.primi2<-str.tie.primi[complete.cases(str.tie.primi),]
+str.tie.primi2<-distinct(str.tie.primi2)
+
+str.tie.primi2$ndvi.s<-scale(str.tie.primi2$NDVI)
+str.tie.primi2$scan.nb.s<-scale(str.tie.primi2$scan.nb)
+str.tie.primi2$troop.nb.s<-scale(str.tie.primi2$troop.nb)
+str.tie.primi2$rank.s<-scale(str.tie.primi2$elo.r)
+str.tie.primi2$time.s <- scale(str.tie.primi2$time)
+str.tie.primi2$primiparous<-as.factor(str.tie.primi2$primiparous)
+str.tie.primi2$year<-as.factor(str.tie.primi2$year)
+str.tie.primi2$troop<-as.factor(str.tie.primi2$troop)
+
+# model structure
+stru_mod <- bf(degree_s ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+degree_s_primi_mod <- brm(stru_mod,family= poisson(),iter=2000, data = str.tie.primi2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr", threads = threading(10))
+
+pp_check(degree_s_primi_mod)
+
+# check for potential dispersion issue: turns out, it is under-dispersed
+PosteriorPredictions <-predict(degree_s_primi_mod, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- str.tie.primi2$degree_s 
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+ppcheck16 <-pp_check(degree_s_primi_mod, type ="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_strong_primi.png", ppcheck16, width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(degree_s_primi_mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(degree_s_primi_mod)
+
+```
+
+  # Weak ties
+
+```{r}
+degree.w.primi <- w.str.data4 %>% dplyr::select(degree_w, primiparous, time, elo.r, ID, NDVI, troop, troop.nb, year,scan.nb) 
+degree.w.primi2<-degree.w.primi[complete.cases(degree.w.primi),]
+degree.w.primi2<-distinct(degree.w.primi2)
+
+degree.w.primi2$ndvi.s<-scale(degree.w.primi2$NDVI)
+degree.w.primi2$scan.nb.s<-scale(degree.w.primi2$scan.nb)
+degree.w.primi2$troop.nb.s<-scale(degree.w.primi2$troop.nb)
+degree.w.primi2$rank.s<-scale(degree.w.primi2$elo.r)
+degree.w.primi2$time.s <- scale(degree.w.primi2$time)
+degree.w.primi2$primiparous<-as.factor(degree.w.primi2$primiparous)
+degree.w.primi2$year<-as.factor(degree.w.primi2$year)
+degree.w.primi2$troop<-as.factor(degree.w.primi2$troop)
+
+# model structure
+stru_mod <- bf(degree_w ~ s(time.s, bs="tp") + s(time.s, by = primiparous, m=1, bs="tp")+ s(primiparous, bs="re", k=2) +s(ID, bs="re")+ s(troop,bs="re",k=3) + s(scan.nb.s,bs="tp", k=3) + s(troop.nb.s, bs="tp") + s(ndvi.s,bs="tp") + s(rank.s,bs="tp") + s(year, bs="re",k=6))
+
+# Run model
+degree_w_primi_mod <- brm(stru_mod,family= poisson(),iter=2000, data = degree.w.primi2, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr", threads = threading(10))
+
+pp_check(degree_w_primi_mod)
+
+# Dispersion check
+PosteriorPredictions <-predict(degree_w_primi_mod, summary=FALSE)
+PosteriorPredictions <- t(PosteriorPredictions)
+medianPosteriorPredictions<- apply(PosteriorPredictions,1,median)
+observations <- degree.w.primi2$degree_w 
+Dharma <- createDHARMa(fittedPredictedResponse = medianPosteriorPredictions, simulatedResponse = PosteriorPredictions, observedResponse = observations, integerResponse = T)
+testDispersion<-testDispersion(Dharma, plot=T)
+
+ppcheck17 <-pp_check(degree_w_primi_mod, type ="bars")+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm"))
+ggsave("ppcheck_weak_primi.png", ppcheck17, width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(degree_w_primi_mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(degree_w_primi_mod)
+```
+
+# PREDICTIONS
+
+  # Strong ties
+
+```{r}
+proto.cond <- conditional_effects(degree_s_primi_mod, 'time.s:primiparous', plot=FALSE)
+proto.data.d.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond))
+
+names.of.id <-unique(str.tie.primi2$ID)
+
+df.pred.d.gr <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=1, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-str.tie.primi2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.data.d.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.d.gr[1,"ndvi.s"], scan.nb.s=proto.data.d.gr[1,"scan.nb.s"], year =proto.data.d.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.data.d.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.d.gr[1,"ndvi.s"], scan.nb.s=proto.data.d.gr[1,"scan.nb.s"], year =proto.data.d.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.data.d.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.d.gr[1,"ndvi.s"], scan.nb.s=proto.data.d.gr[1,"scan.nb.s"], year =proto.data.d.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+  }
+}
+
+df.pred.d.gr<- df.pred.d.gr[-1,]
+df.pred.d.gr$time.s<-round(df.pred.d.gr$time.s, digits=1)
+df.pred.d.gr$ID<-as.character(df.pred.d.gr$ID)
+df.pred.d.gr<-df.pred.d.gr%>%droplevels()
+
+pred_ind_d_gr <- posterior_epred(degree_s_primi_mod, newdata = df.pred.d.gr, summary=F, scale=c("response"))
+
+fitted.d.gr <- as.data.frame(t(pred_ind_d_gr))
+
+# group by time and then get mean per iteration 
+pred.df.d.gr <-cbind(df.pred.d.gr,fitted.d.gr) 
+
+mean_fitted_d_gr<-aggregate(x = pred.df.d.gr[,c(10:4009)],   # Specify data column
+                            by = list(pred.df.d.gr$time.s, pred.df.d.gr$primiparous),  # Specify group indicator
+                            FUN = mean)   # Specify function (i.e. mean)
+
+colnames(mean_fitted_d_gr)[1]<-"time.s"
+colnames(mean_fitted_d_gr)[2]<-"primiparous"
+
+# get the global mean per row
+library(HDInterval)
+temp.df<-data.frame(time.s=1,primiparous=1,mean=1,lci=1,uci=1)
+df.fitted.mean.d.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_d_gr)){
+  
+  temp.df$time.s<-mean_fitted_d_gr[each,1]
+  temp.df$primiparous<-mean_fitted_d_gr[each,2] 
+  temp.df$mean<-mean(as.numeric(mean_fitted_d_gr[each,3:4002])) 
+  global.ci<-apply(mean_fitted_d_gr[each,3:4002],1,hdi, prob=0.95) 
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.d.gr <- rbind(df.fitted.mean.d.gr, temp.df)
+}
+
+df.fitted.mean.d.gr$time<-df.fitted.mean.d.gr$time.s * attributes(str.tie.primi2$time.s)$`scaled:scale` + attributes(str.tie.primi2$time.s)$`scaled:center`
+
+df.fitted.mean.d.gr$time<-round(df.fitted.mean.d.gr$time, digits=1)
+df.fitted.mean.d.gr$primiparous<-as.factor(df.fitted.mean.d.gr$primiparous)
+
+strg.q4<-ggplot(data=df.fitted.mean.d.gr%>%filter(primiparous==1), aes(x=time, y=mean))+geom_line(colour="blue") + geom_ribbon(data=df.fitted.mean.d.gr%>%filter(primiparous==1), aes(ymin=lci, ymax=uci), alpha=0.1,fill = "blue")+theme_classic() + labs( x = "Months around birthing event", y = "Degree") + guides(fill = FALSE)+ labs(color = "Status")+ theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=15))+geom_vline(xintercept =0.0, linetype='dashed') + theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        axis.title.x=element_text(size=15),
+        axis.title.y=element_text(size=15),
+        legend.position = "none",
+        legend.text=element_text(size=12)) + scale_y_continuous(labels=c('0','0.25','0.5','0.75','1'))
+
+file_path <- "fig.q4.strg.png"
+ggsave(file_path, strg.q4, width = 6, height = 4, dpi = 300)
+```
+
+  # Weak ties 
+
+```{r}
+proto.cond <- conditional_effects(degree_w_primi_mod, 'time.s:primiparous', plot=FALSE)
+proto.data.w.gr <- as.data.frame(do.call(rbind.data.frame, proto.cond)) 
+
+names.of.id <-unique(degree.w.primi2$ID)
+
+df.pred.d.gr <- data.frame(time.s = 1, primiparous = 1, ID=as.character("disn"), rank.s=1, troop.nb.s=2, troop="PT", ndvi.s=1, scan.nb.s=1, year=1)
+
+for(i in 1:length(names.of.id)){
+  
+  df.sub2<-degree.w.primi2%>% filter(ID==as.character(names.of.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(time.s = seq(from=min(primi.sub$time.s), to=max(primi.sub$time.s), length.out=100), primiparous= primi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.data.w.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.w.gr[1,"ndvi.s"], scan.nb.s=proto.data.w.gr[1,"scan.nb.s"], year =proto.data.w.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(time.s = seq(from=min(multi.sub$time.s), to=max(multi.sub$time.s), length.out=100), primiparous= multi.sub[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.data.w.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.w.gr[1,"ndvi.s"], scan.nb.s=proto.data.w.gr[1,"scan.nb.s"], year =proto.data.w.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(time.s = seq(from=min(df.sub2$time.s), to=max(df.sub2$time.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(names.of.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.data.w.gr[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.data.w.gr[1,"ndvi.s"], scan.nb.s=proto.data.w.gr[1,"scan.nb.s"], year =proto.data.w.gr[1,"year"])
+    
+    df.pred.d.gr <- rbind(df.pred.d.gr, df.temp)
+  }
+}
+
+df.pred.d.gr<- df.pred.d.gr[-1,]
+df.pred.d.gr$time.s<-round(df.pred.d.gr$time.s, digits=1)
+df.pred.d.gr$ID<-as.character(df.pred.d.gr$ID)
+df.pred.d.gr<-df.pred.d.gr%>%droplevels()
+
+pred_ind_d_gr <- posterior_epred(degree_w_primi_mod, newdata = df.pred.d.gr, summary=F, scale=c("response"))
+
+fitted.d.gr <- as.data.frame(t(pred_ind_d_gr))
+
+# group by time and then get mean per iteration 
+pred.df.d.gr <-cbind(df.pred.d.gr,fitted.d.gr) 
+
+mean_fitted_d_gr<-aggregate(x = pred.df.d.gr[,c(10:4009)],  
+                            by = list(pred.df.d.gr$time.s, pred.df.d.gr$primiparous),  
+                            FUN = mean) 
+
+colnames(mean_fitted_d_gr)[1]<-"time.s"
+colnames(mean_fitted_d_gr)[2]<-"primiparous"
+
+# get the global mean per row
+
+temp.df<-data.frame(time.s=1,primiparous=1,mean=1,lci=1,uci=1)
+df.fitted.mean.d.gr<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_d_gr)){
+  
+  temp.df$time.s<-mean_fitted_d_gr[each,1]
+  temp.df$primiparous<-mean_fitted_d_gr[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_d_gr[each,3:4002])) 
+  global.ci<-apply(mean_fitted_d_gr[each,3:4002],1,hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.d.gr <- rbind(df.fitted.mean.d.gr, temp.df)
+}
+
+df.fitted.mean.d.gr$time<-df.fitted.mean.d.gr$time.s * attributes(degree.w.primi2$time.s)$`scaled:scale` + attributes(degree.w.primi2$time.s)$`scaled:center`
+
+df.fitted.mean.d.gr$time<-round(df.fitted.mean.d.gr$time, digits=1)
+df.fitted.mean.d.gr$primiparous<-as.factor(df.fitted.mean.d.gr$primiparous)
+
+plot.w.ties<-ggplot(data=df.fitted.mean.d.gr%>%filter(primiparous ==1), aes(x=time, y=mean))+geom_line(colour="blue") + geom_ribbon(data=df.fitted.mean.d.gr%>%filter(primiparous ==1), aes(ymin=lci, ymax=uci), alpha=0.1,fill = "blue")+theme_classic()+ guides(fill = FALSE)+ labs(color = "Status") +  labs( x = "Months around birthing event", y = "Degree") + theme(legend.position = "none", axis.text.x=element_text(size=13), axis.text.y= element_text(size=13), axis.title=element_text(size=15))+geom_vline(xintercept =0.0, linetype='dashed')+ theme(axis.line=element_line(colour = 'black', size = .5),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        axis.text = element_text(size=12, color="black"),
+        panel.background = element_rect(fill = "transparent",colour = NA),
+        plot.background = element_rect(fill = "transparent",colour = NA),
+        axis.title.x=element_text(size=15),
+        axis.title.y=element_text(size=15),
+        legend.position = "none",
+        legend.text=element_text(size=12)) 
+
+
+file_path <- "fig.q4.w.png"
+ggsave(file_path, plot.w.ties, width = 6, height = 4, dpi = 300)
+
+```
+
+
+# Q5: KNOCKOUT ANLAYSIS
+
+# You will need to have strong/weak ties information already loaded (so Q4 part in your environment)
+
+# For each primiparous female: extract their  net (netB) where social integration occurred (between time t1 and t3). Then, for each partner, check whether they are weak or strong ties and whether they were present in the network before birth (between t-2 and t0. IF they were, were they weak/strong ties in order to know if they are new in their status or not
+
+# For each row in primiparous.df, for that female do we have data at time -2 and 1, if so, who is new weak/srong tie?
+
+```{r}
+knockout.info<-data.frame(ID = as.character("pouit"), tie= as.character("pouit"), strong =0, weight =1, new=0, date= as.Date("2013-09-09"), year=2013, primiparous=1, time =1)
+knockout.info$date<-as.Date(knockout.info$date)
+
+for ( i in 1:nrow(primi.status)){
+  
+  # From female.measures.gr.before file, we ask whether we have data  at time -2 AND data at time 1 from strg.weak.ties.gr4 file
+  female.id <- primi.status[i,"ID"] 
+  year.id <- primi.status[i,"year"] 
+  
+  lastest.info <-strg.weak.ties.gr4%>% filter(ID==female.id & year==year.id & time==-2)
+  earliest.info <-strg.weak.ties.gr4%>% filter(ID==female.id & year==year.id & time==1)
+  
+  if (nrow(lastest.info)!=0 & nrow(earliest.info)!=0){
+    
+    focal.info <-strg.weak.ties.gr4 %>% filter(ID==female.id & time==-2 & year==year.id | ID==female.id & time==1 & year==year.id)
+    
+    # check for new weak ties
+    weak.post<- focal.info%>% filter(strong ==0 & time ==1)
+    
+    if(nrow(weak.post)>0){
+      
+      weak.prior<- focal.info%>% filter(strong ==0 & time ==-2)
+      
+      for (each in unique(weak.post$tie)){
+        
+        sub.w<-weak.prior%>% filter(tie==each & strong ==0)
+        
+        if( nrow(sub.w)==0){
+          
+          tie.sub.w<- weak.post%>% filter(tie==each)
+          
+          knockout.info<-rbind(knockout.info, data.frame(ID = female.id, tie= each, strong =tie.sub.w [1,"strong"], weight =as.numeric(tie.sub.w[1,"weight"]), new=1,date= tie.sub.w[1,"date"], year=year.id, primiparous =primi.status[i,"primiparous"], time =1))
+          
+        }
+      }
+    }
+    
+    # check for new strong ties
+    strong.post<- focal.info%>% filter(strong ==1 & time ==1)
+    
+    if(nrow(strong.post)>0){
+      
+      strong.prior<- focal.info%>% filter(strong ==1 & time ==-2)
+      
+      for (each in unique(strong.post$tie)){
+        
+        sub.s<-strong.prior%>% filter(tie==each & strong ==0)
+        
+        if( nrow(sub.s)==0){
+          
+          tie.sub.s<- strong.post%>% filter(tie==each)
+          
+          knockout.info<-rbind(knockout.info, data.frame(ID = female.id, tie= each, strong =tie.sub.s [1,"strong"], weight =as.numeric(tie.sub.s[1,"weight"]), new=1,date= tie.sub.s[1,"date"], year=year.id, primiparous =primi.status[i,"primiparous"], time =1))
+          
+        }
+      }
+    }
+  }
+}
+
+knockout.info<-knockout.info %>% filter(ID!="pouit")
+```
+
+# Extract the needed VA: eigen at time -2 for all + eigen at time 1 for new strong/weak + primiparous status + year + ID
+
+MISS UND_EIGEN FROM THE EARLIEST/LATEST INFO
+
+```{r}
+mod.eigen <-data.frame(ID = as.character("pouit"), strong=1, eigen_e=1, eigen_s=1, eigen_mod_s =1, eigen_mod_w=1,eigen_mod_all=1, year=2013, primiparous=1, time =0)
+
+new.addition<-knockout.info%>%filter(new==1)
+
+for ( i in unique(knockout.info$ID)){
+  
+  id.df<-knockout.info%>%filter(ID==i)
+  female.id <- i
+
+  for( j in unique(id.df$year)){
+    
+    year.id <- j
+    
+    lastest.info <-female.measures.birth4 %>% filter(ID==female.id & year==year.id & time==-2)
+    earliest.info <-female.measures.birth4 %>% filter(ID==female.id & year==year.id & time==1)
+    added.node <-new.addition%>% filter(ID==female.id & year==year.id)
+    
+    if (nrow(earliest.info)!=0){
+      
+      # post
+      troop.post<-all_grooming%>% filter(TroopID==earliest.info[1,"troop"])
+      
+      # grab window starts so that the window ends just a day before birth
+      id.sub<-strg.weak.ties.gr4%>%filter(ID==female.id & year==j)
+      windowend <-ymd(id.sub[1, "Date_birth"] - days(1))
+      windowstart <-windowend - as.numeric(months(6), "days")
+      
+      subset.post <- create.window(troop.post[,1:5], windowstart, windowend) 
+      subset.post <- subset.post %>% filter(to !=0)
+      
+      # now need to infer eigen_s BECAUSE this new one will not include birth in. If I had taken the one inferred at time -2, birth would have been included
+      net.all<- create.a.network(subset.post, directed=F)
+      eigen_s<-eigen_centrality(net.all, directed= F, weights = E(net.all)$weight)$vector [female.id]
+      
+      
+      # take out the focal from the whole edgelist ... from focal edgelist, take out the nodes and then add the new focal edgelist to the whole edgelist.
+      
+      if (nrow(added.node)!=0){ 
+        # who is new and needs to be knocked out ? 
+        # Knocks out strong ties
+        str.knock <-added.node%>%filter(strong==1)
+        sub.edgelist <- subset.post %>% filter(from!=female.id & to!=female.id) # without focal
+        id.edgelist <- subset.post %>% filter(from==female.id | to==female.id) # focal edgelist
+        
+        # take out all new nodes (weak and strong)
+        all.id.drop<-as.vector(added.node$tie)
+        alt.list.all <- subset(id.edgelist, !(from %in% all.id.drop))
+        alt.list.all2 <- subset(alt.list.all, !(to %in% all.id.drop))
+        updated.list2<-rbind(alt.list.all2, sub.edgelist)
+        
+        alt.net.all<-create.a.network(updated.list2, directed = TRUE)
+        alt_eigen_all<-eigen_centrality(alt.net.all, directed= F, weights = E(alt.net.all)$weight)$vector [female.id]
+        
+        # this addition is either only strong, only weak or both ties
+        
+        if(nrow(str.knock)>0){
+          
+          id.drop<-as.vector(str.knock$tie)
+          alt.list.str <- subset(id.edgelist, !(from %in% id.drop))
+          alt.list.str2 <- subset(alt.list.str, !(to %in% id.drop))
+          
+          # bind updated focal edgelist and the whole edgelist minus the focal
+          updated.list<-rbind(alt.list.str2, sub.edgelist)
+          
+          alt.net.s<-create.a.network(updated.list, directed = TRUE)
+          alt_eigen_s<-eigen_centrality(alt.net.s, directed= F, weights = E(alt.net.s)$weight)$vector [female.id]
+          
+          if(is.na(alt_eigen_s)==T){
+            
+            alt_eigen_s<-111
+          }
+          
+          strong<-1
+          
+          mod.eigen<-rbind(mod.eigen, data.frame(ID = female.id, strong=strong, eigen_e=earliest.info[1,"und_eigen"], eigen_s =eigen_s, eigen_mod_s =alt_eigen_s, eigen_mod_w =NA, eigen_mod_all= as.numeric(alt_eigen_all), year=year.id, primiparous = added.node[1,"primiparous"], time =0))
+          
+        } 
+        
+        # knocks out weak ties
+        w.knock <-added.node%>%filter(strong==0)
+        
+        if(nrow(w.knock)>0){
+          
+          id.drop<-as.vector(w.knock$tie)
+          alt.list.w <- subset(id.edgelist, !(from %in% id.drop))
+          alt.list.w2 <- subset(alt.list.w, !(to %in% id.drop))
+          
+          # bind updated focal edgelist and the whole edgelist minus the focal
+          updated.list<-rbind(alt.list.w2, sub.edgelist)
+          alt.net<-create.a.network(updated.list, directed = TRUE)
+          alt_eigen<-eigen_centrality(alt.net, directed= F, weights = E(alt.net)$weight)$vector [female.id]
+          strong<-0
+          
+          if(is.na(alt_eigen)==T){
+            
+            alt_eigen<-111
+          }
+          
+          mod.eigen<-rbind(mod.eigen, data.frame(ID = female.id, strong=strong, eigen_e=earliest.info[1,"und_eigen"], eigen_s =eigen_s, eigen_mod_s =NA,eigen_mod_w =alt_eigen, eigen_mod_all= as.numeric(alt_eigen_all), year=year.id, primiparous = added.node[1,"primiparous"], time =0))
+          
+        }
+      }
+    }
+    rm(alt_eigen_all)
+    rm(alt_eigen_s)
+    rm(alt_eigen)
+  }
+}
+
+mod.eigen<-mod.eigen %>% filter(ID!="pouit")
+rownames(mod.eigen)<-NULL
+
+s.w.eigen.knock<-melt(mod.eigen, id=c("ID","strong","year","primiparous","time"))
+s.w.eigen.knock$time<-ifelse(s.w.eigen.knock$variable=="eigen_s", -2,1)
+
+# use old df to attribute ndvi, troop nb etc
+eigen_normal_birth<-female.measures.birth4 %>%select("und_eigen", "ID", "year", "primiparous", "time","scan.nb","NDVI","troop.nb","elo.r", "troop")%>% filter(time ==1 | time==-2)
+colnames(eigen_normal_birth)[1]<- "eigen_e"
+
+eigen.knock.df <- merge(s.w.eigen.knock,eigen_normal_birth, by =c ("ID", "year", "primiparous", "time"),all=T)
+eigen.knock.df2<-eigen.knock.df[complete.cases(eigen.knock.df),]
+eigen.knock.df2<-eigen.knock.df2 %>% select(-c(time,eigen_e))
+
+# put eigen_s in its own column, as its own variable
+eigen.df<-eigen.knock.df2%>%filter(variable=="eigen_s")
+eigen.df2 <-eigen.df[,c(1:4,6)]
+colnames(eigen.df2)[5]<-"eigen_s"
+
+eigen.knock.df3<-merge(eigen.knock.df2,eigen.df2, by =c("ID","year","primiparous", "strong"))
+eigen.knock.df3<-eigen.knock.df3%>%filter(variable!="eigen_s")
+```
+
+#  Modelling part
+
+```{r}
+eigen.knock.beta<-distinct(eigen.knock.df3)
+eigen.knock.beta$ndvi.s<-scale(eigen.knock.beta$NDVI)
+eigen.knock.beta$scan.nb.s<-scale(eigen.knock.beta$scan.nb)
+eigen.knock.beta$troop.nb.s<-scale(eigen.knock.beta$troop.nb)
+eigen.knock.beta$rank.s<-scale(eigen.knock.beta$elo.r)
+eigen.knock.beta$primiparous<-as.factor(eigen.knock.beta$primiparous)
+eigen.knock.beta$year<-as.factor(eigen.knock.beta$year)
+eigen.knock.beta$troop<-as.factor(eigen.knock.beta$troop)
+eigen.knock.beta$variable<-as.factor(eigen.knock.beta$variable)
+eigen.knock.beta$start.e.s<-scale(eigen.knock.beta$eigen_s)
+
+colnames(eigen.knock.beta)[6]<-"eigen_value"
+
+# model structure
+stru_mod <- bf(eigen_value ~ variable*primiparous+ (1|troop) +(1|ID) +scan.nb.s + troop.nb.s + (1|year) + ndvi.s+rank.s+start.e.s) 
+
+knock_eigen_mod <- brm(stru_mod,family= zero_one_inflated_beta(),iter=2000, data = eigen.knock.beta, control = list(adapt_delta =0.95, max_treedepth=10), prior=set_prior ("normal(0,1)",class="b"), chains=4, cores = 4, backend = "cmdstanr", threads = threading(10))
+
+ppcheck18 <-pp_check(knock_eigen_mod)+theme_classic()+ theme(panel.background = element_rect(color = "black"), axis.ticks.length=unit(-0.25, "cm")) + scale_x_continuous(labels=c('0','0.25','0.5','0.75','1'))
+ggsave("ppcheck_knock.png", ppcheck18, width = 7, height = 5, dpi = 300)
+
+# Extracting summary of the model
+model_summary <- summary(knock_eigen_mod)
+fixed_effects <- model_summary$fixed
+fixed_effects_df <- as.data.frame(fixed_effects)
+
+# Extracting smooth terms
+smooth_terms <- model_summary$splines
+smooth_terms_df <- as.data.frame(smooth_terms)
+# Combine population-level effects and smooth terms into one table
+model_summary2 <- rbind(fixed_effects_df, smooth_terms_df)
+
+# Save the table as a Word document
+write.csv(model_summary2, "model_summary2.csv")
+bayes_R2(knock_eigen_mod)
+```
+
+# Predictions
+
+```{r}
+proto.knock<- conditional_effects(knock_eigen_mod, 'variable:primiparous', plot=TRUE)
+proto.knock.df<- as.data.frame(do.call(rbind.data.frame, proto.knock)) # allows us to get the mean for all predictors
+
+#  ID lines
+df.pred<- data.frame(variable="eigen", ID= as.character("disn"), troop="PT",troop.nb.s=1, primiparous=1, scan.nb.s=1, year=1, start.e.s=1, ndvi.s=1, rank.s=1)
+
+primi.id<- unique(eigen.knock.beta$primiparous)
+
+for(i in 1:length(primi.id)){
+  
+  df.sub2<-eigen.knock.beta%>% filter(primiparous==as.character(primi.id[i]))
+  
+  if (length(unique(df.sub2$variable))>1){
+    
+    sub_e <- df.sub2%>% filter(variable=="eigen_e")
+    
+    df.temp <- data.frame(variable =sub_e[1,"variable"], ID=as.character(df.sub2[1,"ID"]), troop = df.sub2[1,"troop"],troop.nb.s=proto.knock.df[1,"troop.nb.s"], primiparous= primi.id[i], scan.nb.s=proto.knock.df[1,"scan.nb.s"], year =df.sub2[1,"year"], start.e.s= proto.knock.df[1,"start.e.s"],ndvi.s=proto.knock.df[1,"ndvi.s"], rank.s=proto.knock.df[1,"rank.s"])
+    
+    df.pred <- rbind(df.pred, df.temp)
+    
+    sub_w <- df.sub2%>% filter(variable=="eigen_mod_w")
+    
+    df.temp <- data.frame(variable =sub_w[1,"variable"], ID=as.character(df.sub2[1,"ID"]), troop = df.sub2[1,"troop"],troop.nb.s=proto.knock.df[1,"troop.nb.s"], primiparous= primi.id[i], scan.nb.s=proto.knock.df[1,"scan.nb.s"], year =df.sub2[1,"year"], start.e.s= proto.knock.df[1,"start.e.s"],ndvi.s=proto.knock.df[1,"ndvi.s"], rank.s=proto.knock.df[1,"rank.s"])
+    
+    df.pred <- rbind(df.pred, df.temp)
+    
+    sub_s <- df.sub2%>% filter(variable=="eigen_mod_s")
+    
+    df.temp <- data.frame(variable =sub_s[1,"variable"], ID=as.character(df.sub2[1,"ID"]), troop = df.sub2[1,"troop"],troop.nb.s=proto.knock.df[1,"troop.nb.s"], primiparous= primi.id[i], scan.nb.s=proto.knock.df[1,"scan.nb.s"], year =df.sub2[1,"year"], start.e.s= proto.knock.df[1,"start.e.s"],ndvi.s=proto.knock.df[1,"ndvi.s"], rank.s=proto.knock.df[1,"rank.s"])
+    
+    df.pred <- rbind(df.pred, df.temp)
+    
+    sub_all <- df.sub2%>% filter(variable=="eigen_mod_all")
+    
+    df.temp <- data.frame(variable =sub_all[1,"variable"], ID=as.character(df.sub2[1,"ID"]), troop = df.sub2[1,"troop"],troop.nb.s=proto.knock.df[1,"troop.nb.s"], primiparous= primi.id[i], scan.nb.s=proto.knock.df[1,"scan.nb.s"], year =df.sub2[1,"year"], start.e.s= proto.knock.df[1,"start.e.s"],ndvi.s=proto.knock.df[1,"ndvi.s"], rank.s=proto.knock.df[1,"rank.s"])
+    
+    df.pred <- rbind(df.pred, df.temp)
+  }
+}
+
+df.pred<- df.pred[-1,]
+df.pred$ID<-as.character(df.pred$ID)
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_knock <- fitted(knock_eigen_mod, newdata = df.pred, summary=F, scale=c("response"), re_formula = NA) # re_formula = NA allows you make predictions about the AVERAGE individual (it removes ID, troop and year (RE))... before we would do it at individual level and then take the mean because of the splines. it back transform automatically
+
+# Back transform
+fitted.knock<- as.data.frame(t(pred_knock))
+pred.df.knock<-cbind(df.pred,fitted.knock) 
+
+mean_fitted_knock<-aggregate(x = pred.df.knock[,c(11:4010)], by = list(pred.df.knock$variable, pred.df.knock$primiparous), FUN = mean)
+colnames(mean_fitted_knock)[1]<-"variable"
+colnames(mean_fitted_knock)[2]<-"primiparous"
+
+# get the mean of the iteration average 
+temp.df<-data.frame(variable="knock", primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.knock<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_knock)){
+  
+  temp.df$variable<-mean_fitted_knock[each,1]
+  temp.df$primiparous<-mean_fitted_knock[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_knock[each,3:4002]))
+  global.ci<-apply(mean_fitted_knock[each,3:4002],1,HDInterval::hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.knock <- rbind(df.fitted.mean.knock, temp.df)
+}
+
+df.fitted.mean.knock$variable<-(as.factor(df.fitted.mean.knock$variable))
+df.fitted.mean.knock$primiparous<-as.factor(df.fitted.mean.knock$primiparous)
+```
+
+  # now do the same to extract the eigen_s value
+
+```{r}
+proto.knock<- conditional_effects(knock_eigen_mod, 'start.e.s', plot=TRUE)
+proto.df<- as.data.frame(do.call(rbind.data.frame, proto.knock))
+
+#  ID lines
+df.pred<- data.frame(variable="eigen", ID= as.character("disn"), troop="PT",troop.nb.s=1, primiparous=1, scan.nb.s=1, year=1, start.e.s=1, ndvi.s=1, rank.s=1)
+
+name.id<- unique(eigen.knock.beta$ID)
+
+for(i in 1:length(name.id)){
+  
+  df.sub2<-eigen.knock.beta%>% filter(ID==as.character(name.id[i]))
+  
+  if (length(unique(df.sub2$primiparous))>1){
+    
+    primi.sub <- df.sub2%>% filter(primiparous==0)
+    
+    df.temp <- data.frame(start.e.s = seq(from=min(primi.sub$start.e.s), to=max(primi.sub$start.e.s), length.out=100), primiparous= primi.sub[1,"primiparous"], ID=as.character(name.id[i]), rank.s= primi.sub [1,"rank.s"], troop.nb.s=proto.df [1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.df[1,"ndvi.s"], scan.nb.s=proto.df [1,"scan.nb.s"], year =df.sub2[1,"year"], variable= as.character(proto.df[1,"variable"]))
+    
+    df.pred <- rbind(df.pred, df.temp)
+    
+    multi.sub <- df.sub2%>% filter(primiparous==1)
+    
+    df.temp <- data.frame(start.e.s = seq(from=min(multi.sub$start.e.s), to= max(multi.sub$start.e.s), length.out=100), primiparous= multi.sub[1,"primiparous"], ID=as.character(name.id[i]), rank.s= multi.sub [1,"rank.s"], troop.nb.s=proto.df [1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.df[1,"ndvi.s"], scan.nb.s=proto.df[1,"scan.nb.s"], year =df.sub2[1,"year"], variable= as.character(proto.df[1,"variable"]))
+    
+    df.pred <- rbind(df.pred, df.temp)
+    
+  }else{
+    
+    df.temp <- data.frame(start.e.s = seq(from=min(df.sub2$start.e.s), to=max(df.sub2$start.e.s), length.out=100), primiparous= df.sub2[1,"primiparous"],ID=as.character(name.id[i]), rank.s= df.sub2 [1,"rank.s"], troop.nb.s=proto.df[1,"troop.nb.s"], troop = df.sub2[1,"troop"], ndvi.s=proto.df[1,"ndvi.s"], scan.nb.s=proto.df[1,"scan.nb.s"], year =df.sub2[1,"year"], variable= as.character(proto.df[1,"variable"]))
+    
+    df.pred <- rbind(df.pred, df.temp)
+  }
+}
+
+df.pred<- df.pred[-1,]
+df.pred<-df.pred%>%droplevels()
+
+# Predictions
+pred_knock <- fitted(knock_eigen_mod, newdata = df.pred, summary=F, scale=c("response"), re_formula = NA) # re_formula = NA allows you make predictions about the AVERAGE individual (it removes ID, troop and year (RE))... before we would do it at individual level and then take the mean because of the splines. it back transform automatically
+
+# Back transform
+fitted.knock<- as.data.frame(t(pred_knock))
+pred.df.knock<-cbind(df.pred,fitted.knock) 
+
+mean_fitted_knock<-aggregate(x = pred.df.knock[,c(11:4010)], by = list(pred.df.knock$start.e.s, pred.df.knock$primiparous), FUN = mean)
+colnames(mean_fitted_knock)[1]<-"start.e.s"
+colnames(mean_fitted_knock)[2]<-"primiparous"
+
+# get the mean of the iteration average 
+temp.df<-data.frame(start.e.s=1, primiparous=1, mean=1, lci=1, uci=1)
+df.fitted.mean.knock.start<-data.frame()
+
+for ( each in 1:nrow(mean_fitted_knock)){
+  
+  temp.df$start.e.s<-mean_fitted_knock[each,1]
+  temp.df$primiparous<-mean_fitted_knock[each,2]
+  temp.df$mean<-mean(as.numeric(mean_fitted_knock[each,3:4002]))
+  global.ci<-apply(mean_fitted_knock[each,3:4002],1,HDInterval::hdi, prob=0.95)
+  temp.df$lci<- global.ci[1,]
+  temp.df$uci<- global.ci[2,]
+  
+  df.fitted.mean.knock.start <- rbind(df.fitted.mean.knock.start, temp.df)
+}
+df.primi.knock.start<-df.fitted.mean.knock.start%>%filter(primiparous==1)
+df.primi.knock.start$start_eigen<-df.primi.knock.start$start.e.s * attributes(eigen.knock.beta$start.e.s)$`scaled:scale` + attributes(eigen.knock.beta$start.e.s)$`scaled:center`
+
+df.primi.knock.start$lci.uns<-df.primi.knock.start$start.e.s * attributes(eigen.knock.beta$start.e.s)$`scaled:scale` + attributes(eigen.knock.beta$start.e.s)$`scaled:center`
+
+df.primi.knock.start$primiparous<-as.factor(df.primi.knock.start$primiparous)
+
+df.eigen.s<-data.frame(variable="eigen_start", primiparous ="1", mean=mean(df.primi.knock.start$start_eigen), lci=mean(df.primi.knock.start$lci),uci=mean(df.primi.knock.start$uci))
+```
+
+# Combine eigen_s with the other eigen values and plot
+
+```{r}
+df.fitted.mean.knock2<-rbind(df.fitted.mean.knock,df.eigen.s)
+df.fitted.mean.knock2$variable <- factor(df.fitted.mean.knock2$variable , levels=c("eigen_start", "eigen_mod_w", "eigen_mod_s", "eigen_mod_all","eigen_e"))
+
+# set up df to get right plot
+primi.df<-df.fitted.mean.knock2%>%filter(primiparous ==1)
+primi.df$order<-as.factor(c(2,5,4,3,1))
+
+k<-ggplot(primi.df,aes(x=order,y=mean))
+# Plot geom_errorbar with mean estimate
+knock.fig <- k +
+  geom_errorbar(aes(ymin = lci, ymax = uci, width = 0.2)) +
+  geom_point(aes(y = mean), size = 1) +  # Add mean estimate as points
+  guides(fill = FALSE) +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(size = 13),
+    axis.text.y = element_text(size = 13),
+    axis.title = element_text(size = 14),
+    axis.line.x = element_line(size = 0.4),
+    axis.line.y = element_line(size = 0.4)
+  ) +
+  labs(y = "Eigenvector value", x = "") +
+  scale_x_discrete(labels = c("1" = "Before birth", "2" = "After birth", "3" = "New weak\nties removed", "4" = "New strong\nties removed", "5" = "All new\nties removed")) +
+  theme(
+    axis.line = element_line(colour = 'black', size = .5),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(size = 12, color = "black"),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    axis.title.x = element_text(size = 12),
+    axis.title.y = element_text(size = 15),
+    legend.position = "none",
+    legend.text = element_text(size = 12)
+  ) +
+  scale_y_continuous(breaks = c(0.3, 0.4, 0.5, 0.6, 0.7, 0.8), labels = c('0.3', '0.4', '0.5', '0.6', '0.7', '0.8'))
+
+print(knock.fig)
+
+file_path <- "fig.q5.png"
+ggsave(file_path, knock.fig, width = 6, height = 4, dpi = 300)
+
+```
+
